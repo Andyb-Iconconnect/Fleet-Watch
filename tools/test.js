@@ -4560,6 +4560,111 @@ test('the timespan asked for is one they will serve', () => {
     'and a negative never asks for a negative window');
 });
 
+/* --- Checking a provider before integrating one --------------------------- */
+
+test('the provider check finds the records whatever they are wrapped in', () => {
+  /**
+   * Providers disagree about the envelope: MarineTraffic answers with a bare
+   * array, others wrap it in {vessels: []}, {data: []}, {results: []}. Guessing
+   * the key means the tool works for one provider and silently reports "0 of
+   * 61" for the next — which is indistinguishable from the answer that would
+   * make us reject them.
+   */
+  const { execFileSync } = require('child_process');
+  const tool = path.join(__dirname, 'check-provider.js');
+  const tmp = path.join(require('os').tmpdir(), 'fw-provider-test.json');
+  const run = (body) => {
+    fs.writeFileSync(tmp, JSON.stringify(body));
+    return execFileSync(process.execPath, [tool, tmp], { encoding: 'utf8' });
+  };
+  const row = (y) => ({ mmsi: String(y.mmsi), latitude: 43.5, longitude: 7.1 });
+  const three = REAL_FLEET.slice(0, 3).map(row);
+
+  ['vessels', 'data', 'results'].forEach((key) => {
+    const out = run({ [key]: three });
+    assert.ok(/3 of 61 carried/.test(out), 'found inside {' + key + ': []}');
+  });
+  assert.ok(/3 of 61 carried/.test(run(three)), 'and as a bare array');
+
+  // The longest list wins: an answer carrying a short "meta" or "errors" array
+  // alongside the fleet must not be read as the fleet.
+  const out = run({ warnings: [{ code: 'x' }], vessels: three });
+  assert.ok(/3 of 61 carried/.test(out), 'the fleet, not the warnings');
+
+  fs.unlinkSync(tmp);
+});
+
+test('the provider check names the vessels a feed does not carry', () => {
+  // The list of what is MISSING is the output that decides a provider. A count
+  // alone cannot be acted on; a name can be looked up on another site.
+  const { execFileSync } = require('child_process');
+  const tool = path.join(__dirname, 'check-provider.js');
+  const tmp = path.join(require('os').tmpdir(), 'fw-provider-missing.json');
+  fs.writeFileSync(tmp, JSON.stringify(
+    REAL_FLEET.slice(0, 2).map((y) => ({ mmsi: String(y.mmsi) }))));
+  const out = execFileSync(process.execPath, [tool, tmp], { encoding: 'utf8' });
+
+  assert.ok(/2 of 61 carried/.test(out));
+  assert.ok(/NOT carried \(59\)/.test(out));
+  assert.ok(out.includes(REAL_FLEET[3].name), 'by name');
+  assert.ok(out.includes(String(REAL_FLEET[3].mmsi)), 'and by number');
+
+  // Sentinel vessels are marked, because those are the ones whose absence
+  // actually breaks a service commitment. Taken from the vessels the response
+  // did NOT include, so it is genuinely in the missing list — the first version
+  // of this leaned on a helper that always returned false, which meant the
+  // assertion never ran at all.
+  const returned = new Set(REAL_FLEET.slice(0, 2).map((y) => String(y.mmsi)));
+  const sentinel = REAL_FLEET.find((y) => y.sentinel && !returned.has(String(y.mmsi)));
+  assert.ok(sentinel, 'the fleet has a Sentinel vessel outside the two returned');
+  assert.ok(new RegExp(sentinel.name + '\\s+\\[Sentinel\\]').test(out),
+    'and a missing Sentinel yacht is flagged as one');
+  fs.unlinkSync(tmp);
+});
+
+test('an empty answer is reported as a failed request, not as 61 absences', () => {
+  /**
+   * A refused key comes back as an ordinary HTTP 200 with an error in the body.
+   * Listing all sixty-one as "not carried" buries the one line that matters
+   * under sixty-one lines of noise, and reads as a damning coverage verdict
+   * when it is really "the request did not work".
+   */
+  const { execFileSync } = require('child_process');
+  const tool = path.join(__dirname, 'check-provider.js');
+  const tmp = path.join(require('os').tmpdir(), 'fw-provider-refused.json');
+  fs.writeFileSync(tmp, JSON.stringify({ error: { message: 'API key not recognised' } }));
+  const out = execFileSync(process.execPath, [tool, tmp], { encoding: 'utf8' });
+
+  assert.ok(/0 of 61 carried/.test(out));
+  assert.ok(!/NOT carried/.test(out), 'no list of sixty-one');
+  assert.ok(/Nothing came back/.test(out), 'the request is named as the problem');
+  assert.ok(/ordinary HTTP 200/.test(out), 'with the reason it can look like success');
+  fs.unlinkSync(tmp);
+});
+
+test('an MMSI is recognised by its shape, not only by its field name', () => {
+  // A provider that calls it `vesselId`, or returns it as a number rather than
+  // a string, is still matched — otherwise the tool reports zero coverage for a
+  // feed that has everything, which is the worst answer it could give.
+  const { execFileSync } = require('child_process');
+  const tool = path.join(__dirname, 'check-provider.js');
+  const tmp = path.join(require('os').tmpdir(), 'fw-provider-shape.json');
+  const run = (rows) => {
+    fs.writeFileSync(tmp, JSON.stringify(rows));
+    return execFileSync(process.execPath, [tool, tmp], { encoding: 'utf8' });
+  };
+
+  assert.ok(/2 of 61/.test(run(REAL_FLEET.slice(0, 2)
+    .map((y) => ({ vesselId: String(y.mmsi) })))), 'an unexpected key name');
+  assert.ok(/2 of 61/.test(run(REAL_FLEET.slice(0, 2)
+    .map((y) => ({ mmsi: y.mmsi })))), 'a number rather than a string');
+
+  // And an IMO must not be mistaken for one: seven digits, wrong shape.
+  assert.ok(/0 of 61/.test(run([{ imo: 9249403 }, { imo: 9015462 }])),
+    'an IMO is not an MMSI');
+  fs.unlinkSync(tmp);
+});
+
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
 
 reachedEnd = true;
