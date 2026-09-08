@@ -997,6 +997,13 @@ test('the fleet file is internally consistent', () => {
       assert.ok(fromMmsi, y.name + ': MMSI ' + y.mmsi + ' has no known flag administration');
       assert.strictEqual(y.flag, fromMmsi.flag,
         y.name + ": flag says " + y.flag + ' but MMSI ' + y.mmsi + ' says ' + fromMmsi.flag);
+      // And the code, which is what actually draws the ensign. Limerence
+      // reflagged Cayman to Marshall Islands; a record updated in the name but
+      // not the code would fly the wrong flag on the board, which is a quieter
+      // wrong than silence and harder to notice.
+      assert.strictEqual(y.flagCode, fromMmsi.flagCode,
+        y.name + ": flag code says " + y.flagCode + ' but MMSI ' + y.mmsi +
+        ' says ' + fromMmsi.flagCode);
     }
     if (y.demo && y.demo.position) {
       assert.ok(Math.abs(y.demo.position[0]) <= 180 && Math.abs(y.demo.position[1]) <= 90);
@@ -4167,6 +4174,17 @@ test('the neighbour named is the nearest one, not the first one found', () => {
   } finally {
     window.Store = original;
   }
+});
+
+test('a vessel id still matches the number it was named for', () => {
+  // The convention is name-lastfour. It is only a handle, but one that says
+  // 0200 while the record says 2789 is a trap for whoever reads the file next.
+  REAL_FLEET.forEach((y) => {
+    const tail = y.id.split('-').pop();
+    if (!/^\d{4}$/.test(tail)) return;          // not all ids follow it
+    assert.strictEqual(tail, String(y.mmsi).slice(-4),
+      y.name + "'s id ends " + tail + ' but her MMSI ends ' + String(y.mmsi).slice(-4));
+  });
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

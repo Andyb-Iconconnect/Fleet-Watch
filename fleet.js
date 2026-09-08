@@ -678,14 +678,18 @@ window.FLEET = [
     discreet: false
   },
   {
-    id: 'limerence-0200',
+    // Reflagged Cayman -> Marshall Islands. Found by the chase: a Limerence
+    // was broadcasting on 538072789, one number below our own Nero at
+    // 538072790, while this record still listened on her old Cayman number.
+    // Confirmed against MarineTraffic before the change was made.
+    id: 'limerence-2789',
     name: 'Limerence',
     prefix: null,
-    mmsi: 319230200,
+    mmsi: 538072789,
     imo: null,
     callSign: null,
-    flag: 'Cayman Islands',
-    flagCode: 'KY',
+    flag: 'Marshall Islands',
+    flagCode: 'MH',
     loa: null, beam: null, grossTonnage: 499,
     builder: 'Alia Yachts',
     yearBuilt: 2025, lastRefit: null,
