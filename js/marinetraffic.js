@@ -62,8 +62,29 @@
       .replace(/\/+$/, '');
     return base + '/' + encodeURIComponent(key) +
       '/v:8/protocol:jsono/msgtype:simple' +
-      '/timespan:' + Math.round(cfg.timespanMinutes || 60);
+      '/timespan:' + timespan(cfg);
   }
+
+  /**
+   * How far back the answer may reach, in minutes.
+   *
+   * Their own limits, from the PS02 query parameters: "Maximum value for
+   * terrestrial coverage is 60. Maximum value for satellite coverage is 180."
+   * Asking for more than the plan allows is not our call to make and not
+   * something the board could recover from at three in the morning, so it is
+   * clamped here — visibly, rather than by whatever the server decides to do
+   * with an out-of-range request.
+   *
+   * The satellite ceiling only applies on a plan that has satellite. Asking
+   * for 180 without it is asking for a refusal.
+   */
+  function timespan(cfg) {
+    var ceiling = cfg.satellite ? 180 : 60;
+    var want = Math.round(cfg.timespanMinutes || ceiling);
+    return Math.max(1, Math.min(ceiling, want));
+  }
+
+  MT.timespan = timespan;
 
   MT.url = url;                        // so a test can read what would be sent
 

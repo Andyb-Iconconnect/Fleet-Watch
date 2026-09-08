@@ -88,7 +88,11 @@ window.CONFIG = {
   marineTraffic: {
     endpoint: 'https://services.marinetraffic.com/api/exportvessels',
     pollMinutes: 15,
-    timespanMinutes: 60
+    // Their ceiling, not ours: 60 minutes on terrestrial coverage, 180 with
+    // satellite. Set `satellite` only if the plan actually includes it —
+    // asking for 180 without it is asking for a refusal.
+    timespanMinutes: 60,
+    satellite: false
   },
 
   ais: {

@@ -4536,6 +4536,30 @@ test('where a position came from survives the cache', () => {
     });
 });
 
+test('the timespan asked for is one they will serve', () => {
+  /**
+   * From their own PS02 query parameters: "Maximum value for terrestrial
+   * coverage is 60. Maximum value for satellite coverage is 180." Asking for
+   * more than the plan allows is a refusal, and a board does not recover from
+   * one of those on its own at three in the morning.
+   */
+  assert.strictEqual(MarineTraffic.timespan({ timespanMinutes: 60 }), 60);
+  assert.strictEqual(MarineTraffic.timespan({ timespanMinutes: 240 }), 60,
+    'clamped to the terrestrial ceiling');
+  assert.strictEqual(MarineTraffic.timespan({ timespanMinutes: 240, satellite: true }), 180,
+    'and to the satellite one when the plan has satellite');
+  assert.strictEqual(MarineTraffic.timespan({ timespanMinutes: 30, satellite: true }), 30,
+    'a smaller ask is left alone');
+  assert.strictEqual(MarineTraffic.timespan({}), 60, 'the default is the ceiling');
+  assert.strictEqual(MarineTraffic.timespan({ satellite: true }), 180);
+  // Zero is treated as unset rather than honoured: "look back over no time at
+  // all" is a typo, not a request, and the forgiving reading is the one that
+  // leaves a board working.
+  assert.strictEqual(MarineTraffic.timespan({ timespanMinutes: 0 }), 60);
+  assert.ok(MarineTraffic.timespan({ timespanMinutes: -5 }) >= 1,
+    'and a negative never asks for a negative window');
+});
+
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
 
 reachedEnd = true;
