@@ -82,6 +82,12 @@
       accurate: fix.accurate != null ? fix.accurate : null,
       raim: fix.raim != null ? fix.raim : null,
       turning: fix.turning != null ? fix.turning : null,
+      // Where the position came from: 'TER' from a shore receiver, 'SAT' from
+      // a satellite pass. AIS itself does not carry this — it is the provider
+      // saying how it heard her — so it is null on a feed that does not say.
+      // Worth keeping: a satellite fix is why a yacht mid-ocean appears at all,
+      // and on a metered plan it is also the expensive kind.
+      source: fix.source != null ? fix.source : null,
       at: at
     };
 
@@ -350,7 +356,8 @@
         payload.vessels[v.yacht.mmsi] = {
           fix: { lon: v.fix.lon, lat: v.fix.lat, cog: v.fix.cog, heading: v.fix.heading,
                  sog: v.fix.sog, navStatus: v.fix.navStatus, accurate: v.fix.accurate,
-                 raim: v.fix.raim, turning: v.fix.turning, at: v.fix.at.getTime() },
+                 raim: v.fix.raim, turning: v.fix.turning, source: v.fix.source || null,
+                 at: v.fix.at.getTime() },
           voyage: v.voyage,
           ais: v.ais || null,
           track: v.track.slice(-120).map(function (p) { return [p.lon, p.lat, p.at.getTime()]; })
@@ -391,6 +398,7 @@
           heading: saved.fix.heading, sog: saved.fix.sog,
           navStatus: saved.fix.navStatus, accurate: saved.fix.accurate,
           raim: saved.fix.raim, turning: saved.fix.turning,
+          source: saved.fix.source || null,
           at: new Date(saved.fix.at)
         };
         // Heard before, even if it was yesterday. Without this a reload reads as

@@ -188,25 +188,11 @@
     return svg;
   }
 
-  function startFeed() {
-    var key = window.Settings.aisKey();
-    window.Store.mode = key ? 'live' : 'demo';
-    if (key) {
-      window.Ais.start(key, window.FLEET.map(function (y) { return y.mmsi; }));
-    } else {
-      window.Demo.start(window.Store.vessels);
-    }
-    window.Store.recompute();
-  }
-
-  // Switching between simulated and live without a reload: stop whichever feed
-  // is running before starting the other, or the demo keeps writing invented
-  // fixes over the real ones.
-  function restartFeed() {
-    window.Ais.stop();
-    window.Demo.stop();
-    startFeed();
-  }
+  // Which provider, and the stop-before-start that keeps the demo from writing
+  // invented fixes over real ones, both live in feed.js now — the console had
+  // its own copy of this and the two had to be kept in step by hand.
+  function startFeed() { window.Feed.start(); }
+  function restartFeed() { window.Feed.restart(); }
 
   /* --- Scenes ------------------------------------------------------------ */
 

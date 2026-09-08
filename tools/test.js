@@ -43,9 +43,11 @@ function stubCanvasContext() {
 const readRepo = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 ['config.js', 'fleet.js', 'data/mid.js', 'data/ports.js', 'data/world-land.js',
  'js/geo.js', 'js/format.js', 'js/store.js', 'js/ais.js', 'js/vessel.js',
- 'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js'].forEach(load);
+ 'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js',
+ 'js/marinetraffic.js'].forEach(load);
 
-const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster } = window;
+const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster,
+        MarineTraffic } = window;
 const FleetMap = window.FleetMap;
 
 // The behavioural tests run against a fixed sample fleet, NOT against fleet.js.
@@ -4185,6 +4187,353 @@ test('a vessel id still matches the number it was named for', () => {
     assert.strictEqual(tail, String(y.mmsi).slice(-4),
       y.name + "'s id ends " + tail + ' but her MMSI ends ' + String(y.mmsi).slice(-4));
   });
+});
+
+/* --- MarineTraffic ---------------------------------------------------------
+ *
+ * Driven off MarineTraffic's own test fixture, taken from their published
+ * client library — real field names, real units, a real sample body. It is not
+ * a response this code has seen, which is why MarineTraffic.audit() exists;
+ * but it is a great deal better than a shape I made up.
+ * ------------------------------------------------------------------------- */
+
+const MT_FIXTURE = JSON.parse(readRepo('tools/fixtures/marinetraffic-ps02.json'));
+
+test('the request goes to the endpoint MarineTraffic documents', () => {
+  const u = MarineTraffic.url('KEY-123', {
+    endpoint: 'https://services.marinetraffic.com/api/exportvessels',
+    timespanMinutes: 60
+  });
+  assert.strictEqual(u,
+    'https://services.marinetraffic.com/api/exportvessels/KEY-123' +
+    '/v:8/protocol:jsono/msgtype:simple/timespan:60');
+
+  // jsono, never json. Plain `json` returns bare arrays whose meaning depends
+  // on column order — a schema change would silently shift every field by one.
+  assert.ok(/protocol:jsono/.test(u));
+
+  // The relay, when there is one, and no trailing-slash surprise.
+  assert.ok(/^http:\/\/localhost:9000\/mt\/K\//.test(
+    MarineTraffic.url('K', { endpoint: 'http://localhost:9000/mt/', timespanMinutes: 5 })),
+    'a configured endpoint is used verbatim, minus any trailing slash');
+});
+
+test('speed comes back as knots x10 and is divided', () => {
+  /**
+   * Their own field description: "The speed (in knots x10)". The fixture says
+   * SPEED "74", which is 7.4 knots. Taken at face value the fleet does seventy
+   * knots and every yacht reads as underway — including the ones alongside.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    const row = Object.assign({}, MT_FIXTURE[0], { MMSI: String(FLEET[0].mmsi) });
+    MarineTraffic._apply(row);
+    const v = s.byMmsi[String(FLEET[0].mmsi)];
+    assert.strictEqual(v.fix.sog, 7.4, '74 is 7.4 knots');
+    assert.strictEqual(v.fix.cog, 327, 'course is plain degrees');
+    assert.strictEqual(v.fix.heading, 329, 'and so is heading');
+    close(v.fix.lat, 47.7585, 0.0001, 'latitude survives being a string');
+    close(v.fix.lon, -5.154223, 0.0001, 'longitude too, sign included');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('draught is metres x10, and length is not', () => {
+  // Two scaled fields, one unscaled, adjacent in the same response. Getting
+  // this uniform either way would be wrong.
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    const row = Object.assign({}, MT_FIXTURE[0], { MMSI: String(FLEET[0].mmsi) });
+    MarineTraffic._apply(row);
+    const v = s.byMmsi[String(FLEET[0].mmsi)];
+    assert.strictEqual(v.voyage.draught, 4.4, 'DRAUGHT 44 is 4.4 m');
+    close(v.ais.loa, 81.79, 0.01, 'LENGTH is already metres');
+    close(v.ais.beam, 11.3, 0.01, 'and so is WIDTH');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('a timestamp with no zone is read as UTC, which is what it is', () => {
+  /**
+   * Their timestamps are UTC and say so nowhere: "2017-05-19T09:39:57". A
+   * date-time in that form is LOCAL time to JavaScript — an hour out in London
+   * in summer, two in Monaco. Every fix would be stamped wrong and every age
+   * along with it, and "seen 40 minutes ago" would be a confident lie.
+   */
+  const at = MarineTraffic._parseTime('2017-05-19T09:39:57');
+  assert.strictEqual(at.toISOString(), '2017-05-19T09:39:57.000Z');
+
+  // An offset already present is left alone rather than double-stamped.
+  assert.strictEqual(MarineTraffic._parseTime('2017-05-19T09:39:57Z').toISOString(),
+    '2017-05-19T09:39:57.000Z');
+  assert.strictEqual(MarineTraffic._parseTime('2017-05-19T11:39:57+02:00').toISOString(),
+    '2017-05-19T09:39:57.000Z');
+
+  // Nonsense is now, not Invalid Date, which would poison every comparison.
+  assert.ok(isFinite(MarineTraffic._parseTime('not a date').getTime()));
+  assert.ok(isFinite(MarineTraffic._parseTime(null).getTime()));
+});
+
+test('the timestamp is read as UTC on a machine that is not', () => {
+  /**
+   * The check above cannot see this bug. This container runs on UTC, where
+   * local time and UTC are the same thing, so parsing "2017-05-19T09:39:57" as
+   * local gives the right answer by luck and the assertion passes either way —
+   * confirmed by deleting the fix and watching the suite stay green.
+   *
+   * The board runs in London and Monaco. So this asks a second node, told it
+   * is in Tokyo, and that one cannot get the right answer by accident.
+   */
+  const { execFileSync } = require('child_process');
+  const script = `
+    global.window = {};
+    require('${path.join(__dirname, '..', 'js', 'marinetraffic.js')}');
+    process.stdout.write(
+      window.MarineTraffic._parseTime('2017-05-19T09:39:57').toISOString());
+  `;
+  ['Asia/Tokyo', 'America/New_York'].forEach((zone) => {
+    const out = execFileSync(process.execPath, ['-e', script], {
+      env: Object.assign({}, process.env, { TZ: zone }), encoding: 'utf8'
+    });
+    assert.strictEqual(out, '2017-05-19T09:39:57.000Z',
+      'parsed in ' + zone + ' it is still the same instant');
+  });
+});
+
+test('an error body with a 200 is not read as an empty fleet', () => {
+  /**
+   * Their errors arrive as { errors: [...] } with a perfectly ordinary HTTP
+   * 200. A handler that only checks the status treats a refused key as a fleet
+   * that has gone silent — which is the same reading the AISstream socket gave
+   * for a rejected subscription, and it cost days.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    MarineTraffic._receive({ errors: [{ code: '12', detail: 'Invalid API key' }] });
+    assert.strictEqual(s.connection, 'rejected', 'said out loud, not drawn as silence');
+    assert.ok(/Invalid API key/.test(MarineTraffic.lastError), 'with their words');
+    assert.ok(/code 12/.test(MarineTraffic.lastError), 'and their code');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('a vessel that is not ours is ignored', () => {
+  // PS02 returns the fleet defined in THEIR account, which may be wider than
+  // ours — and one day will be, when somebody adds a boat there and not here.
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    MarineTraffic._apply(MT_FIXTURE[0]);          // MMSI 304010417, a stranger
+    assert.strictEqual(s.byMmsi['304010417'], undefined);
+    assert.strictEqual(s.vessels.filter((v) => v.fix).length, 0, 'nothing landed');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('where the position came from is kept', () => {
+  /**
+   * DSRC is 'TER' or 'SAT'. AIS itself does not carry it — it is the provider
+   * saying how it heard her — and it is the entire reason for changing
+   * provider: a satellite fix is why a yacht mid-ocean appears at all.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    const mmsi = String(FLEET[0].mmsi);
+    MarineTraffic._apply(Object.assign({}, MT_FIXTURE[0],
+      { MMSI: mmsi, DSRC: 'SAT' }));
+    assert.strictEqual(s.byMmsi[mmsi].fix.source, 'SAT');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('the audit says which of ours the account is missing', () => {
+  /**
+   * PS02 answers with the fleet defined in the MarineTraffic account, not with
+   * an MMSI list we send. A yacht missing from that fleet never appears here
+   * however long the board runs, and nothing else would ever say why.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    MarineTraffic.mmsiList = FLEET.map((y) => String(y.mmsi));
+    const rows = [
+      Object.assign({}, MT_FIXTURE[0], { MMSI: String(FLEET[0].mmsi) }),
+      Object.assign({}, MT_FIXTURE[0], { MMSI: '999000111' })
+    ];
+    const a = MarineTraffic._audit(rows);
+    assert.strictEqual(a.rows, 2);
+    assert.strictEqual(a.matched, 1, 'one of the two was ours');
+    assert.deepStrictEqual(a.extra, ['999000111'], 'the other named');
+    assert.strictEqual(a.missing.length, FLEET.length - 1,
+      'and everyone of ours their account did not return');
+    assert.ok(a.missing.includes(String(FLEET[1].mmsi)));
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('the audit names a field that never arrived', () => {
+  /**
+   * The mapping in marinetraffic.js was read off their published client and
+   * its fixtures, not off a response this code has seen. A key spelled
+   * differently does not throw — the value silently becomes null, and a fleet
+   * with no speeds looks like a fleet at anchor.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    MarineTraffic.mmsiList = [];
+    const complete = MarineTraffic._audit([MT_FIXTURE[0]]);
+    assert.deepStrictEqual(complete.absentFields, [],
+      'their own fixture carries every field this file reads');
+
+    const thin = JSON.parse(JSON.stringify(MT_FIXTURE[0]));
+    delete thin.SPEED;
+    delete thin.DSRC;
+    const short = MarineTraffic._audit([thin]);
+    assert.deepStrictEqual(short.absentFields.sort(), ['DSRC', 'SPEED']);
+
+    assert.strictEqual(MarineTraffic._audit([]).absentFields, null,
+      'and an empty answer is not evidence of a missing field');
+  } finally {
+    window.Store = original;
+  }
+});
+
+test('the provider is chosen in one place, and everything stops before anything starts', () => {
+  /**
+   * The board and the console each carried their own copy of "if there is a
+   * key, start the socket, else start the demo" — two places to edit, two to
+   * get wrong. And the demo writing invented fixes over real ones is a bug
+   * this board has already had: invisible, because invented positions look
+   * exactly like positions.
+   */
+  const feed = readRepo('js/feed.js');
+  const stop = feed.slice(feed.indexOf('Feed.stop = function'),
+                          feed.indexOf('Feed.restart'));
+  assert.ok(/Ais\.stop\(\)/.test(stop) && /Demo\.stop\(\)/.test(stop) &&
+            /MarineTraffic\.stop\(\)/.test(stop),
+    'all three are stopped, not only the one believed to be running');
+
+  ['js/app.js', 'js/console.js'].forEach((f) => {
+    const src = readRepo(f);
+    assert.ok(!/Ais\.start\(/.test(src), f + ' no longer picks a provider itself');
+    assert.ok(!/Demo\.start\(/.test(src), f + ' does not start the demo itself either');
+    assert.ok(/Feed\.start\(\)/.test(src) && /Feed\.restart\(\)/.test(src),
+      f + ' goes through Feed');
+  });
+});
+
+test('feed.js and marinetraffic.js are loaded by both pages, in order', () => {
+  ['index.html', 'console.html'].forEach((page) => {
+    const html = readRepo(page);
+    const at = (f) => html.indexOf('js/' + f);
+    assert.ok(at('marinetraffic.js') > -1, page + ' loads the adapter');
+    assert.ok(at('feed.js') > at('marinetraffic.js'),
+      page + ' loads feed.js after the providers it chooses between');
+    assert.ok(at('feed.js') < at('app.js') || at('app.js') === -1,
+      page + ' has Feed defined before the page that calls it');
+  });
+});
+
+/* --- Three things only the running console showed ------------------------- */
+
+test('restarting onto the same provider and key does nothing', () => {
+  /**
+   * A billing loop, found by driving the adapter against a stand-in and
+   * watching the request count climb: each answer filled in a length or a call
+   * sign, the console adopted it, adopting reloaded the fleet, reloading
+   * restarted the feed, and the restart fetched again.
+   *
+   * Free and pushed, a needless reconnect is untidy. Billed by the call, it is
+   * a loop with an invoice attached.
+   */
+  const feed = readRepo('js/feed.js');
+  const restart = feed.slice(feed.indexOf('Feed.restart = function'),
+                             feed.indexOf('function mmsis'));
+  assert.ok(/if \(Feed\.running === wanted\) return false;/.test(restart),
+    'the same provider on the same key is not a restart');
+  assert.ok(/Feed\.stop\(\)/.test(restart) && /Feed\.start\(\)/.test(restart),
+    'and a genuine change still bounces it');
+
+  const start = feed.slice(feed.indexOf('Feed.start = function'),
+                           feed.indexOf('Feed.stop = function'));
+  assert.ok(/Feed\.running = provider/.test(start), 'start records what is running');
+  assert.ok(/Feed\.running = null/.test(
+    feed.slice(feed.indexOf('Feed.stop = function'), feed.indexOf('Feed.restart'))),
+    'and stop forgets it, so the next start is never skipped');
+});
+
+test('a batch is saved before anyone is told about it', () => {
+  /**
+   * recompute() notifies the console, which adopts what the batch filled in,
+   * which reloads the fleet, which re-inits the Store — and Store.init restores
+   * from the cache. Persisting afterwards meant restore read a cache written
+   * before the batch existed: a poll that fetched twelve vessels ended with
+   * none, every fix applied and then thrown away by the reload it provoked.
+   *
+   * The store was empty after a request that had plainly worked.
+   */
+  const src = readRepo('js/marinetraffic.js');
+  const receive = src.slice(src.indexOf('function receive('),
+                            src.indexOf('function apply('));
+  const persist = receive.indexOf('Store.persist()');
+  const recompute = receive.indexOf('Store.recompute()');
+  assert.ok(persist !== -1 && recompute !== -1, 'it does both');
+  assert.ok(persist < recompute, 'and saves first');
+});
+
+test('crossing between simulated and real empties the store', () => {
+  /**
+   * Demo mode writes invented fixes down the same path as a live one, so
+   * afterwards nothing tells them apart: a yacht heard in the simulation still
+   * counted as heard once the key went in, and the console read thirteen of
+   * sixty-one when the answer held twelve.
+   *
+   * The board has already drawn invented positions as real once. It is the
+   * worst thing it can do and it is invisible.
+   */
+  const feed = readRepo('js/feed.js');
+  const start = feed.slice(feed.indexOf('Feed.start = function'),
+                           feed.indexOf('Feed.stop = function'));
+  assert.ok(/if \(window\.Store\.mode !== mode\)/.test(start),
+    'only when the mode actually changes');
+  assert.ok(/window\.Store\.init\(window\.FLEET\)/.test(start),
+    'and the store is rebuilt, which restores only a cache stamped live');
+
+  // The store side of the same promise, which is what makes the rebuild safe.
+  const store = readRepo('js/store.js');
+  assert.ok(/if \(Store\.mode !== 'live'\) return;/.test(store),
+    'nothing is cached in demo mode');
+  assert.ok(/payload\.mode !== 'live'/.test(store),
+    'and nothing not stamped live is restored');
+});
+
+test('where a position came from survives the cache', () => {
+  // TER against SAT is the reason for changing provider at all. Dropped on a
+  // reload it would look like the satellite positions had stopped.
+  const store = readRepo('js/store.js');
+  ['source: fix.source', 'source: v.fix.source', 'source: saved.fix.source']
+    .forEach((needle) => {
+      assert.ok(store.indexOf(needle) !== -1,
+        'carried through: ' + needle);
+    });
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

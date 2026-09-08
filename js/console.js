@@ -125,21 +125,8 @@
     requestAnimationFrame(frame);
   }
 
-  function startFeed() {
-    var key = window.Settings.aisKey();
-    window.Store.mode = key ? 'live' : 'demo';
-    if (key) {
-      window.Ais.start(key, window.FLEET.map(function (y) { return y.mmsi; }));
-    } else {
-      window.Demo.start(window.Store.vessels);
-    }
-  }
-
-  function restartFeed() {
-    window.Ais.stop();
-    window.Demo.stop();
-    startFeed();
-  }
+  function startFeed() { window.Feed.start(); }
+  function restartFeed() { window.Feed.restart(); }
 
   function renderBrand() {
     var host = el('brand');

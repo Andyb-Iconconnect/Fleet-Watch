@@ -57,6 +57,40 @@ window.CONFIG = {
   // a yacht crossing the Atlantic will simply go quiet for days. So will one
   // whose captain has switched the transponder off. Both are handled as
   // "last known position" rather than as errors.
+  /**
+   * Which AIS provider the board listens to.
+   *
+   *   'aisstream'     free, a WebSocket that pushes. Measured over a
+   *                   fortnight: it carried thirty-five of our sixty-one, and
+   *                   its busiest vessel out of twenty-six thousand was heard
+   *                   nine times in four minutes. Its receiver network is what
+   *                   it is; no setting at this end changes that.
+   *   'marinetraffic' paid, an HTTP endpoint you poll. Where this fleet was
+   *                   validated in the first place, so it is known to have all
+   *                   sixty-one, and it says whether a position came from a
+   *                   shore receiver or a satellite.
+   */
+  provider: 'aisstream',
+
+  /**
+   * MarineTraffic, when `provider` names it.
+   *
+   * `endpoint` exists because this is a SERVER-side API: a browser calling
+   * services.marinetraffic.com will very likely be refused by CORS, and the
+   * key would be sitting in a page in any case. Point it at the relay and both
+   * problems go away.
+   *
+   * The two intervals are what it costs. Every poll is one request covering
+   * the whole fleet; `timespanMinutes` is how far back the answer may reach,
+   * and wants to be comfortably longer than the gap between polls or a vessel
+   * that reported just after the last one falls between them.
+   */
+  marineTraffic: {
+    endpoint: 'https://services.marinetraffic.com/api/exportvessels',
+    pollMinutes: 15,
+    timespanMinutes: 60
+  },
+
   ais: {
     endpoint: 'wss://stream.aisstream.io/v0/stream',
 
