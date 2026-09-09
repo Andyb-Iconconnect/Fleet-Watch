@@ -58,11 +58,20 @@
     <input id="key" type="password" autocomplete="off" spellcheck="false"
            placeholder="Paste your VesselAPI key">
     <button id="go" type="button">Ask</button>
+    <input id="pages" type="number" min="1" max="30" value="1"
+           style="flex:0 0 5.5rem" title="Pages to follow">
     <button id="save" class="quiet" type="button" disabled>Save the answer</button>
   </div>
 
   <p class="note">
-    The key is used for this one request and nothing else. It is not saved, not
+    The number beside the button is <b>how many pages to follow</b>, and it
+    costs <b>one call off the allowance per page</b>. One page proves the key
+    works. Ten tells you how much of the fleet is really in there and what
+    reading it continuously would cost.
+  </p>
+
+  <p class="note">
+    The key is used for these requests and nothing else. It is not saved, not
     stored in the browser, and disappears when you close the tab &mdash; unlike
     the AIS key, which the board keeps on purpose.
   </p>
@@ -107,60 +116,91 @@ document.getElementById('go').addEventListener('click', function () {
     return;
   }
 
+  var pages = Math.max(1, Math.min(30, Number(document.getElementById('pages').value) || 1));
   var mmsis = fleet.map(function (y) { return String(y.mmsi); });
-  var url = BASE + PATHNAME +
-    '?filter.idType=mmsi&filter.ids=' + encodeURIComponent(mmsis.join(','));
+  var all = [];
+  var calls = 0;
+  var firstOfFirstPage = null;
+  var token = null;
 
-  say('Asking for ' + mmsis.length + ' vessels, in one request.\n');
+  say('Asking for ' + mmsis.length + ' vessels' +
+      (pages > 1 ? ', up to ' + pages + ' pages — up to ' + pages +
+        ' calls off the allowance' : ', one call') + '.\n');
 
-  fetch(url, {
-    headers: { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' }
-  }).then(function (res) {
-    add('\nHTTP ' + res.status + ' ' + res.statusText + '\n');
-    /**
-     * Quota headers are usually invisible here even when the provider sends
-     * them: a browser hides every response header a server has not explicitly
-     * listed in Access-Control-Expose-Headers. So the dashboard figure, read
-     * before and after, is the reliable measure of what this cost.
-     */
-    return res.text().then(function (body) { return { res: res, body: body }; });
-  }).then(function (got) {
-    answer = got.body;
-    saveBtn.disabled = false;
+  step();
 
-    var parsed;
-    try { parsed = JSON.parse(got.body); }
-    catch (e) {
-      add('\nThat answer is not JSON. The first part of it:\n\n' +
-          got.body.slice(0, 800));
-      return;
-    }
+  function step() {
+    var url = BASE + PATHNAME +
+      '?filter.idType=mmsi&filter.ids=' + encodeURIComponent(mmsis.join(',')) +
+      (token ? '&nextToken=' + encodeURIComponent(token) : '');
 
-    if (!got.res.ok) {
-      add('\nThe request was refused. What they said:\n\n' +
-          JSON.stringify(parsed, null, 2).slice(0, 1200));
-      return;
-    }
+    fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' }
+    }).then(function (res) {
+      return res.text().then(function (body) { return { res: res, body: body }; });
+    }).then(function (got) {
+      calls++;
+      answer = JSON.stringify({ vesselPositions: all }, null, 2);
+      saveBtn.disabled = false;
 
-    report(parsed, fleet);
-  }).catch(function (err) {
-    /**
-     * "Failed to fetch" is the browser refusing to make or read the request,
-     * and it looks exactly like being offline. Almost always CORS, which is a
-     * decision by their server about pages, not about this key.
-     */
-    add('\nThe browser would not complete the request: ' +
-        ((err && err.message) || err) + '\n\n' +
-        'That is almost certainly CORS — their server declining to answer a ' +
-        'web page rather than anything wrong with the key. Sending a key in ' +
-        'an Authorization header makes the browser ask permission first, with ' +
-        'an OPTIONS request, before it will send anything at all; an API ' +
-        'written to be called from a server has no reason to answer that. It ' +
-        'means the board cannot call VesselAPI directly and would need the ' +
-        'relay.\n\n' +
-        'To find out whether the key itself works, run this from a terminal ' +
-        'instead:\n\n  node tools/fetch-vesselapi.js YOUR_KEY\n');
-  });
+      var parsed;
+      try { parsed = JSON.parse(got.body); }
+      catch (e) {
+        add('\nThat answer is not JSON. The first part of it:\n\n' +
+            got.body.slice(0, 800));
+        return;
+      }
+      if (!got.res.ok) {
+        add('\nHTTP ' + got.res.status + ' on call ' + calls +
+            '. What they said:\n\n' +
+            JSON.stringify(parsed, null, 2).slice(0, 1200));
+        return report(all, fleet, calls, false);
+      }
+
+      var rows = longestList(parsed, 0);
+      var stamp = rows.length ? JSON.stringify(rows[0]) : null;
+
+      if (calls === 1) {
+        firstOfFirstPage = stamp;
+      } else if (stamp && stamp === firstOfFirstPage) {
+        /**
+         * The cursor was sent back and ignored: page two is page one. Paging on
+         * would spend the allowance re-reading a single page, which is the sort
+         * of quiet loop that arrives as an invoice.
+         */
+        add('\nCall ' + calls + ' returned the same records as the first — ' +
+            'they do not accept the cursor under the name "nextToken". Their ' +
+            'documentation will name it.\n');
+        return report(all, fleet, calls, false);
+      }
+
+      add('  call ' + calls + ': ' + rows.length + ' reports\n');
+      all = all.concat(rows);
+      token = parsed.nextToken || parsed.next_token || null;
+      answer = JSON.stringify({ vesselPositions: all }, null, 2);
+
+      if (!token || calls >= pages || !rows.length) {
+        return report(all, fleet, calls, !token);
+      }
+      step();
+    }).catch(function (err) {
+      /**
+       * "Failed to fetch" is the browser refusing to make or read the request,
+       * and it looks exactly like being offline.
+       */
+      add('\nThe browser would not complete the request: ' +
+          ((err && err.message) || err) + '\n\n' +
+          'That is almost certainly CORS — their server declining to answer a ' +
+          'web page rather than anything wrong with the key. Sending a key in ' +
+          'an Authorization header makes the browser ask permission first, ' +
+          'with an OPTIONS request, before it will send anything at all; an ' +
+          'API written to be called from a server has no reason to answer ' +
+          'that. It means the board cannot call VesselAPI directly and would ' +
+          'need the relay.\n\n' +
+          'To find out whether the key itself works, run this from a terminal ' +
+          'instead:\n\n  node tools/fetch-vesselapi.js YOUR_KEY\n');
+    });
+  }
 });
 
 /**
@@ -171,9 +211,7 @@ document.getElementById('go').addEventListener('click', function () {
  * record looks like an MMSI. Writing this against guessed field names would
  * report zero coverage for a feed that has everything.
  */
-function report(body, fleet) {
-  var rows = longestList(body, 0);
-
+function report(rows, fleet, calls, exhausted) {
   // The same broadcast arrives more than once — the first real answer had one
   // yacht at 22:32:42.238727Z and again at 22:32:42Z, same position, different
   // processing times. Counting reports would flatter the feed; the question is
@@ -192,12 +230,19 @@ function report(body, fleet) {
   Object.keys(newest).forEach(function (m) { ours[m] ? mine++ : strangers++; });
 
   var times = rows.map(function (r) { return Date.parse(r.timestamp || 0); })
-    .filter(function (t) { return t > 0; }).sort();
+    .filter(function (t) { return t > 0; }).sort(function (a, b) { return a - b; });
   var span = times.length > 1 ? (times[times.length - 1] - times[0]) / 60000 : 0;
 
-  add('\n' + rows.length + ' reports, from ' + mine + ' of our yachts');
+  add('\n' + rows.length + ' reports in ' + calls + ' call' +
+      (calls === 1 ? '' : 's') + ', from ' + mine + ' of our ' + fleet.length +
+      ' yachts');
   if (span) add(', covering ' + span.toFixed(1) + ' minutes');
   add('.\n');
+
+  if (!exhausted) {
+    add('\nThe stream did not run out, so ' + mine + ' is a floor and not the ' +
+        'answer. Most of the fleet simply has not spoken inside this window.\n');
+  }
 
   if (strangers) {
     add('\n' + strangers + ' vessels in there are NOT ours — the MMSI filter ' +
@@ -206,9 +251,26 @@ function report(body, fleet) {
     add('\nEverything in it is ours, so the filter is working.\n');
   }
 
-  if (body && body.nextToken) {
-    add('\nThere is more behind this page. This is one page of a stream, not ' +
-        'the fleet — do not read the count above as coverage.\n');
+  /**
+   * On a stream the bill follows the fleet's chatter, not our refresh rate: to
+   * miss nothing every report has to be read once, whenever we look. So the
+   * figure that matters is reports a minute divided by the page size.
+   */
+  if (span > 0.5 && rows.length) {
+    var perMin = rows.length / span;
+    var pageSize = Math.max(1, Math.round(rows.length / calls));
+    add('\n' + perMin.toFixed(1) + ' reports a minute at ' + pageSize +
+        ' a page is about ' +
+        Math.round(perMin * 60 * 24 * 30 / pageSize).toLocaleString('en-GB') +
+        ' calls a month to read without gaps, at any refresh rate.\n');
+  }
+
+  var missing = fleet.filter(function (y) { return !newest[String(y.mmsi)]; });
+  if (missing.length && rows.length) {
+    add('\nNOT SEEN in this window (' + missing.length + '):\n');
+    missing.forEach(function (y) {
+      add('  ' + y.mmsi + '  ' + y.name + (y.sentinel ? '   [Sentinel]' : '') + '\n');
+    });
   }
 
   if (rows.length) {
