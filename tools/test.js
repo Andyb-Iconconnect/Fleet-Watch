@@ -4665,6 +4665,99 @@ test('an MMSI is recognised by its shape, not only by its field name', () => {
   fs.unlinkSync(tmp);
 });
 
+test('one request carries the whole fleet, and never the key', () => {
+  // The two things that decide whether a provider is usable at all: can it be
+  // asked for sixty-one vessels at once, and does the key stay out of the URL.
+  // A URL is logged by every proxy it passes and printed to the terminal by
+  // this very tool; a header is not.
+  const { buildUrl } = require(path.join(__dirname, 'fetch-vesselapi.js'));
+  const url = buildUrl(REAL_FLEET.map((y) => y.mmsi));
+  const ids = decodeURIComponent(new URL(url).searchParams.get('filter.ids'));
+
+  assert.strictEqual(ids.split(',').length, REAL_FLEET.length,
+    'every vessel in the one request');
+  REAL_FLEET.forEach((y) => {
+    assert.ok(ids.split(',').indexOf(String(y.mmsi)) !== -1, y.name + ' is asked for');
+  });
+  assert.strictEqual(new URL(url).searchParams.get('filter.idType'), 'mmsi');
+
+  const src = readRepo('tools/fetch-vesselapi.js');
+  assert.ok(/Authorization/.test(src), 'the key travels in a header');
+  assert.ok(!/searchParams\.set\(\s*['"](key|apikey|api_key|token)/i.test(src),
+    'and never in the query string');
+  // Nor to disk. The response is saved; the key is not part of it.
+  assert.ok(!/writeFileSync\([^)]*\bkey\b/.test(src), 'the key is never written out');
+});
+
+test('the endpoint can be pointed elsewhere, so it can be driven without a key', () => {
+  // Every provider adapter on this project was got wrong first and found out by
+  // running it against a stand-in. A tool that can only talk to the real
+  // service can only be tested by spending quota on it.
+  const { buildUrl } = require(path.join(__dirname, 'fetch-vesselapi.js'));
+  const url = buildUrl([123456789],
+    { base: 'http://127.0.0.1:8791', pathname: '/v2/elsewhere' });
+  assert.strictEqual(new URL(url).origin, 'http://127.0.0.1:8791');
+  assert.strictEqual(new URL(url).pathname, '/v2/elsewhere');
+});
+
+test('the same fix heard twice counts once, and the newest one wins', () => {
+  // The first real answer carried RADIANT at 22:32:42.238727Z and again at
+  // 22:32:42Z — one broadcast, two records. Counting reports as vessels would
+  // have flattered the feed; taking the older of two as current would have put
+  // a yacht back where she was.
+  const { newestPerVessel } = require(path.join(__dirname, 'fetch-vesselapi.js'));
+  const best = newestPerVessel([
+    { mmsi: 319012900, timestamp: '2026-09-08T22:32:42Z', longitude: 1 },
+    { mmsi: 319012900, timestamp: '2026-09-08T22:36:00Z', longitude: 2 },
+    { mmsi: 232058397, timestamp: '2026-09-08T22:35:47Z', longitude: 3 }
+  ]);
+  assert.strictEqual(best.size, 2, 'two vessels, not three reports');
+  assert.strictEqual(best.get('319012900').row.longitude, 2, 'the newer fix');
+});
+
+test('the records and the cursor are found without knowing their key names', () => {
+  // Their list is called `vesselPositions` today. A tool that hard-codes that
+  // reports zero coverage the day it is renamed, which reads as a provider
+  // that has lost the fleet.
+  const { readPage } = require(path.join(__dirname, 'fetch-vesselapi.js'));
+  const page = readPage({
+    vesselPositions: [{ mmsi: 319012900 }, { mmsi: 232058397 }],
+    nextToken: 'abc'
+  });
+  assert.strictEqual(page.rows.length, 2);
+  assert.strictEqual(page.token, 'abc');
+
+  const renamed = readPage({ data: { positions: [{ mmsi: 1 }, { mmsi: 2 }, { mmsi: 3 }] } });
+  assert.strictEqual(renamed.rows.length, 3, 'nested and renamed, still found');
+  assert.strictEqual(renamed.token, null, 'no cursor is null, not undefined');
+
+  // A response that carries a second, shorter list of objects — a warnings
+  // array, an errors array — must not be mistaken for the records.
+  const twoLists = readPage({
+    warnings: [{ code: 7 }],
+    vesselPositions: [{ mmsi: 1 }, { mmsi: 2 }, { mmsi: 3 }]
+  });
+  assert.strictEqual(twoLists.rows.length, 3, 'the longer list is the records');
+});
+
+test('a page size can be asked for, so the cost of the stream can be divided', () => {
+  // The bill follows how much the fleet talks divided by the page size, so the
+  // page size is the only lever there is. A flag that quietly did nothing would
+  // read as a provider that will not serve more than twenty.
+  const { buildUrl } = require(path.join(__dirname, 'fetch-vesselapi.js'));
+  assert.strictEqual(
+    new URL(buildUrl([123456789], { limit: 200 })).searchParams.get('limit'), '200');
+  assert.strictEqual(
+    new URL(buildUrl([123456789], {})).searchParams.get('limit'), null,
+    'and not sent at all when it was not asked for');
+
+  // The cursor goes back under a name, and the name is a guess with an
+  // override — so it has to be the override that is honoured.
+  assert.strictEqual(
+    new URL(buildUrl([1], { token: 'abc', tokenParam: 'pageToken' }))
+      .searchParams.get('pageToken'), 'abc');
+});
+
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
 
 reachedEnd = true;

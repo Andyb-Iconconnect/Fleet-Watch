@@ -1,0 +1,259 @@
+<title>VesselAPI check</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 2rem 1.5rem;
+    background: #070E16; color: #EAF2F8;
+    font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.3rem; font-weight: 600; margin: 0 0 0.4rem; }
+  p { color: #9DB4C6; margin: 0 0 1rem; }
+  .row { display: flex; gap: 0.6rem; margin: 1.2rem 0; flex-wrap: wrap; }
+  input {
+    flex: 1 1 22rem; min-width: 0; box-sizing: border-box;
+    padding: 0.6rem 0.75rem; border: 1px solid rgba(120,180,220,0.26);
+    border-radius: 8px; background: #16283A; color: #EAF2F8;
+    font: inherit; font-family: ui-monospace, Menlo, Consolas, monospace;
+  }
+  input:focus { outline: none; border-color: #3CB4E4; }
+  button {
+    padding: 0.6rem 1.1rem; border: none; border-radius: 8px;
+    background: #3CB4E4; color: #04202C; font: inherit; font-weight: 600;
+    cursor: pointer;
+  }
+  button.quiet { background: none; color: #67819A; border: 1px solid rgba(120,180,220,0.26); }
+  button[disabled] { opacity: 0.45; cursor: default; }
+  pre {
+    margin: 0; padding: 1rem; border-radius: 10px;
+    background: #0C1723; border: 1px solid rgba(120,180,220,0.13);
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 12.5px; line-height: 1.55;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+    max-height: 60vh; overflow-y: auto;
+  }
+  .note { font-size: 0.85rem; color: #67819A; }
+  b { color: #EAF2F8; font-weight: 600; }
+</style>
+
+<main>
+  <h1>VesselAPI check</h1>
+  <p>
+    Paste the key from the VesselAPI dashboard and press Ask. This makes
+    <b>one</b> request for all sixty-one yachts and reports what came back.
+    It costs one call off the allowance.
+  </p>
+  <p>
+    Their answer is a <b>stream of position reports</b>, newest first, twenty to
+    a page &mdash; not one row per yacht. So one page shows you the shape of the
+    data and proves the key works; it cannot tell you how many of the sixty-one
+    they carry, because most of the fleet simply has not spoken in the last four
+    minutes. For that, follow the cursor:
+    <b>node tools/fetch-vesselapi.js YOUR_KEY --pages 10</b>.
+  </p>
+
+  <div class="row">
+    <input id="key" type="password" autocomplete="off" spellcheck="false"
+           placeholder="Paste your VesselAPI key">
+    <button id="go" type="button">Ask</button>
+    <button id="save" class="quiet" type="button" disabled>Save the answer</button>
+  </div>
+
+  <p class="note">
+    The key is used for this one request and nothing else. It is not saved, not
+    stored in the browser, and disappears when you close the tab &mdash; unlike
+    the AIS key, which the board keeps on purpose.
+  </p>
+
+  <pre id="out">Waiting.</pre>
+</main>
+
+<script src="../fleet.js"></script>
+<script>
+/* -----------------------------------------------------------------------------
+ * The browser is the one tool everybody already has. tools/fetch-vesselapi.js
+ * does the same job from a terminal and reports more, but it needs node
+ * installed; this needs a double-click.
+ *
+ * IT ALSO ANSWERS A QUESTION THE TERMINAL CANNOT. MarineTraffic and every other
+ * provider of this kind is a server-side API, and a page calling one directly
+ * is normally refused by CORS — which is why a relay keeps appearing on the
+ * plan. If this page gets an answer, VesselAPI can be called from the board
+ * itself and there is no relay to build. If it is refused, that is not a
+ * failure of the key and the message below says so.
+ * -------------------------------------------------------------------------- */
+'use strict';
+
+var BASE = 'https://api.vesselapi.com';
+var PATHNAME = '/v1/vessels/positions';
+
+var out = document.getElementById('key') && document.getElementById('out');
+var saveBtn = document.getElementById('save');
+var answer = null;
+
+function say(text) { out.textContent = text; }
+function add(text) { out.textContent += text; }
+
+document.getElementById('go').addEventListener('click', function () {
+  var key = document.getElementById('key').value.trim();
+  if (!key) { say('No key pasted.'); return; }
+
+  var fleet = window.FLEET || [];
+  if (!fleet.length) {
+    say('fleet.js did not load. Keep this file in the tools folder next to ' +
+        'the one it came from, or open it through a local web server.');
+    return;
+  }
+
+  var mmsis = fleet.map(function (y) { return String(y.mmsi); });
+  var url = BASE + PATHNAME +
+    '?filter.idType=mmsi&filter.ids=' + encodeURIComponent(mmsis.join(','));
+
+  say('Asking for ' + mmsis.length + ' vessels, in one request.\n');
+
+  fetch(url, {
+    headers: { 'Authorization': 'Bearer ' + key, 'Accept': 'application/json' }
+  }).then(function (res) {
+    add('\nHTTP ' + res.status + ' ' + res.statusText + '\n');
+    /**
+     * Quota headers are usually invisible here even when the provider sends
+     * them: a browser hides every response header a server has not explicitly
+     * listed in Access-Control-Expose-Headers. So the dashboard figure, read
+     * before and after, is the reliable measure of what this cost.
+     */
+    return res.text().then(function (body) { return { res: res, body: body }; });
+  }).then(function (got) {
+    answer = got.body;
+    saveBtn.disabled = false;
+
+    var parsed;
+    try { parsed = JSON.parse(got.body); }
+    catch (e) {
+      add('\nThat answer is not JSON. The first part of it:\n\n' +
+          got.body.slice(0, 800));
+      return;
+    }
+
+    if (!got.res.ok) {
+      add('\nThe request was refused. What they said:\n\n' +
+          JSON.stringify(parsed, null, 2).slice(0, 1200));
+      return;
+    }
+
+    report(parsed, fleet);
+  }).catch(function (err) {
+    /**
+     * "Failed to fetch" is the browser refusing to make or read the request,
+     * and it looks exactly like being offline. Almost always CORS, which is a
+     * decision by their server about pages, not about this key.
+     */
+    add('\nThe browser would not complete the request: ' +
+        ((err && err.message) || err) + '\n\n' +
+        'That is almost certainly CORS — their server declining to answer a ' +
+        'web page rather than anything wrong with the key. Sending a key in ' +
+        'an Authorization header makes the browser ask permission first, with ' +
+        'an OPTIONS request, before it will send anything at all; an API ' +
+        'written to be called from a server has no reason to answer that. It ' +
+        'means the board cannot call VesselAPI directly and would need the ' +
+        'relay.\n\n' +
+        'To find out whether the key itself works, run this from a terminal ' +
+        'instead:\n\n  node tools/fetch-vesselapi.js YOUR_KEY\n');
+  });
+});
+
+/**
+ * How many of ours came back, and which did not.
+ *
+ * Shape-blind on purpose, exactly as tools/check-provider.js is: it hunts for
+ * the longest list of records anywhere in the answer and for whatever in each
+ * record looks like an MMSI. Writing this against guessed field names would
+ * report zero coverage for a feed that has everything.
+ */
+function report(body, fleet) {
+  var rows = longestList(body, 0);
+
+  // The same broadcast arrives more than once — the first real answer had one
+  // yacht at 22:32:42.238727Z and again at 22:32:42Z, same position, different
+  // processing times. Counting reports would flatter the feed; the question is
+  // how many YACHTS.
+  var newest = {};
+  rows.forEach(function (row) {
+    var m = mmsiOf(row);
+    if (!m) return;
+    var at = Date.parse(row.timestamp || row.time || 0) || 0;
+    if (!newest[m] || at > newest[m].at) newest[m] = { at: at, row: row };
+  });
+
+  var ours = {};
+  fleet.forEach(function (y) { ours[String(y.mmsi)] = true; });
+  var mine = 0, strangers = 0;
+  Object.keys(newest).forEach(function (m) { ours[m] ? mine++ : strangers++; });
+
+  var times = rows.map(function (r) { return Date.parse(r.timestamp || 0); })
+    .filter(function (t) { return t > 0; }).sort();
+  var span = times.length > 1 ? (times[times.length - 1] - times[0]) / 60000 : 0;
+
+  add('\n' + rows.length + ' reports, from ' + mine + ' of our yachts');
+  if (span) add(', covering ' + span.toFixed(1) + ' minutes');
+  add('.\n');
+
+  if (strangers) {
+    add('\n' + strangers + ' vessels in there are NOT ours — the MMSI filter ' +
+        'is not being applied, which is what went wrong with AISstream.\n');
+  } else if (rows.length) {
+    add('\nEverything in it is ours, so the filter is working.\n');
+  }
+
+  if (body && body.nextToken) {
+    add('\nThere is more behind this page. This is one page of a stream, not ' +
+        'the fleet — do not read the count above as coverage.\n');
+  }
+
+  if (rows.length) {
+    add('\nONE RECORD, AS IT ARRIVED\n' + JSON.stringify(rows[0], null, 2) + '\n');
+  } else {
+    add('\nNothing came back. Providers often report a refusal with an ' +
+        'ordinary HTTP 200 and the reason inside the body — press Save the ' +
+        'answer and look.\n');
+  }
+}
+
+function longestList(node, depth) {
+  if (depth > 6 || node == null || typeof node !== 'object') return [];
+  if (Array.isArray(node)) {
+    var objects = node.filter(function (r) {
+      return r && typeof r === 'object' && !Array.isArray(r);
+    });
+    return objects.length === node.length && objects.length ? node : [];
+  }
+  return Object.keys(node).reduce(function (best, k) {
+    var found = longestList(node[k], depth + 1);
+    return found.length > best.length ? found : best;
+  }, []);
+}
+
+function mmsiOf(row) {
+  var looksRight = function (v) { return /^[2-7]\d{8}$/.test(String(v)); };
+  var named = ['mmsi', 'MMSI', 'Mmsi', 'mmsi_number', 'mmsiNumber'];
+  for (var i = 0; i < named.length; i++) {
+    if (row[named[i]] != null && looksRight(row[named[i]])) return String(row[named[i]]);
+  }
+  var keys = Object.keys(row);
+  for (var j = 0; j < keys.length; j++) {
+    if (looksRight(row[keys[j]])) return String(row[keys[j]]);
+  }
+  return null;
+}
+
+saveBtn.addEventListener('click', function () {
+  if (answer == null) return;
+  var blob = new Blob([answer], { type: 'application/json' });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'vesselapi.json';
+  a.click();
+  URL.revokeObjectURL(a.href);
+});
+</script>
