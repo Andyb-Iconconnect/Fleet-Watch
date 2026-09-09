@@ -44,10 +44,10 @@ const readRepo = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 ['config.js', 'fleet.js', 'data/mid.js', 'data/ports.js', 'data/world-land.js',
  'js/geo.js', 'js/format.js', 'js/store.js', 'js/ais.js', 'js/vessel.js',
  'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js',
- 'js/marinetraffic.js'].forEach(load);
+ 'js/marinetraffic.js', 'js/vesselapi.js'].forEach(load);
 
 const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster,
-        MarineTraffic } = window;
+        MarineTraffic, VesselApi } = window;
 const FleetMap = window.FleetMap;
 
 // The behavioural tests run against a fixed sample fleet, NOT against fleet.js.
@@ -4445,8 +4445,11 @@ test('feed.js and marinetraffic.js are loaded by both pages, in order', () => {
     const html = readRepo(page);
     const at = (f) => html.indexOf('js/' + f);
     assert.ok(at('marinetraffic.js') > -1, page + ' loads the adapter');
+    assert.ok(at('vesselapi.js') > -1, page + ' loads the VesselAPI adapter');
     assert.ok(at('feed.js') > at('marinetraffic.js'),
       page + ' loads feed.js after the providers it chooses between');
+    assert.ok(at('feed.js') > at('vesselapi.js'),
+      page + ' loads feed.js after the VesselAPI adapter too');
     assert.ok(at('feed.js') < at('app.js') || at('app.js') === -1,
       page + ' has Feed defined before the page that calls it');
   });
@@ -4756,6 +4759,308 @@ test('a page size can be asked for, so the cost of the stream can be divided', (
   assert.strictEqual(
     new URL(buildUrl([1], { token: 'abc', tokenParam: 'pageToken' }))
       .searchParams.get('pageToken'), 'abc');
+});
+
+/* -----------------------------------------------------------------------------
+ * VesselAPI — the third provider, and the first that is a stream.
+ *
+ * The fixture is the shape of a real response: the field set, the duplicate
+ * fixes, the rows that arrive with no `cog` and no `imo`, the cursor. The
+ * positions and the day are invented, because a repository is a poor place to
+ * archive where anyone's yacht actually was on a particular night.
+ * ------------------------------------------------------------------------- */
+
+const VA_FIXTURE = JSON.parse(readRepo('tools/fixtures/vesselapi-stream.json'));
+const VA_ROWS = VA_FIXTURE.vesselPositions;
+
+// The fixture carries real MMSIs, so these run against the real fleet rather
+// than the sample one.
+function realStore() {
+  Store.listeners = [];
+  Store.init(REAL_FLEET);
+  Store.vessels.forEach((v) => { v.fix = null; v.track = []; v.voyage = {}; v.ais = null; });
+  return Store;
+}
+
+function withStore(fn) {
+  const original = window.Store;
+  const s = realStore();
+  window.Store = s;
+  VesselApi.mmsiList = REAL_FLEET.map((y) => String(y.mmsi));
+  try { return fn(s); } finally { window.Store = original; }
+}
+
+test('all sixty-one are asked for at once, and the key is never in the URL', () => {
+  // Bulk is the only reason this provider is affordable: one request covers the
+  // fleet. And a URL is logged by every proxy it passes and printed by every
+  // diagnostic that touches it, so the key travels in a header instead.
+  const mmsis = REAL_FLEET.map((y) => String(y.mmsi));
+  const u = VesselApi.url('SECRET-KEY', mmsis, null);
+  const ids = decodeURIComponent(new URL(u).searchParams.get('filter.ids'));
+
+  assert.strictEqual(ids.split(',').length, REAL_FLEET.length);
+  assert.ok(!/SECRET-KEY/.test(u), 'the key is not in the URL');
+  assert.ok(/Authorization/.test(readRepo('js/vesselapi.js')),
+    'it travels in a header instead');
+});
+
+test('the cursor and the page size go back under names that can be corrected', () => {
+  /**
+   * Both are guesses. A response names its cursor `nextToken` but says nothing
+   * about what to call it going back, and nothing about asking for a bigger
+   * page — and page size divides the monthly bill directly. Guesses belong in
+   * config where they can be fixed without touching code.
+   */
+  const original = CONFIG.vesselApi;
+  CONFIG.vesselApi = {
+    endpoint: 'http://relay.local/v', pageSize: 200,
+    pageParam: 'page_size', cursorParam: 'cursor'
+  };
+  try {
+    const u = new URL(VesselApi.url('K', ['123456789'], 'TOK'));
+    assert.strictEqual(u.searchParams.get('page_size'), '200');
+    assert.strictEqual(u.searchParams.get('cursor'), 'TOK');
+    assert.strictEqual(u.origin + u.pathname, 'http://relay.local/v',
+      'the relay endpoint is used verbatim');
+
+    CONFIG.vesselApi = { endpoint: 'http://relay.local/v' };
+    const bare = new URL(VesselApi.url('K', ['123456789'], null));
+    assert.strictEqual(bare.searchParams.get('limit'), null,
+      'no page size is asked for when none is set');
+    assert.strictEqual(bare.searchParams.get('nextToken'), null,
+      'and no cursor on the first page');
+  } finally { CONFIG.vesselApi = original; }
+});
+
+test('one broadcast heard twice is one fix, and the newer report wins', () => {
+  /**
+   * The first real answer had one yacht at 22:32:42.238727Z and again at
+   * 22:32:42Z — same position, different processing times, plainly a single
+   * transmission carried twice. Applied as they arrive, every duplicate counts
+   * as another message received and the console's reception figures overstate
+   * the feed it is there to measure.
+   */
+  withStore((s) => {
+    const before = s.messageCount;
+    VesselApi.since = null;
+    const audit = VesselApi._done(VA_ROWS, 1, false);
+
+    const reports = VA_ROWS.length;
+    const vessels = new Set(VA_ROWS.filter((r) => !r.suspected_glitch)
+      .map((r) => String(r.mmsi))).size;
+    assert.ok(reports > vessels, 'the fixture does carry duplicates');
+    assert.strictEqual(s.messageCount - before, vessels,
+      'one message counted per vessel, not per report');
+    assert.strictEqual(audit.heard, vessels);
+
+    // ANAWA appears three times; the newest is the one on the chart.
+    const anawa = VA_ROWS.filter((r) => r.vessel_name === 'ANAWA')
+      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0];
+    const held = s.byMmsi[String(anawa.mmsi)];
+    assert.strictEqual(held.fix.at.toISOString(), new Date(anawa.timestamp).toISOString());
+    assert.strictEqual(held.fix.lon, anawa.longitude);
+  });
+
+  /**
+   * And again with the page reversed.
+   *
+   * They answer newest first, so taking whichever duplicate comes first in the
+   * list happens to be right and this check passed against code that did — I
+   * only found that by making it take the older one and watching the suite stay
+   * green. Their order is their business, not a promise to us.
+   */
+  withStore((s) => {
+    VesselApi.since = null;
+    VesselApi._done(VA_ROWS.slice().reverse(), 1, false);
+    const anawa = VA_ROWS.filter((r) => r.vessel_name === 'ANAWA')
+      .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp))[0];
+    assert.strictEqual(
+      s.byMmsi[String(anawa.mmsi)].fix.at.toISOString(),
+      new Date(anawa.timestamp).toISOString(),
+      'the newest report wins whatever order it arrives in');
+  });
+});
+
+test('a report their own pipeline doubts is not drawn', () => {
+  // `suspected_glitch` is their quality flag. A position they do not believe is
+  // a yacht drawn in a field, and the last good fix ageing honestly is better.
+  const glitched = VA_ROWS.filter((r) => r.suspected_glitch);
+  assert.ok(glitched.length, 'the fixture exercises the flag');
+
+  withStore((s) => {
+    VesselApi.since = null;
+    const audit = VesselApi._done(glitched, 1, false);
+    assert.strictEqual(audit.glitches, glitched.length);
+    assert.strictEqual(audit.heard, 0);
+    assert.strictEqual(s.byMmsi[String(glitched[0].mmsi)].fix, null,
+      'nothing was drawn from it');
+  });
+});
+
+test('speed is plain knots, and the timestamp is the instant they meant', () => {
+  /**
+   * MarineTraffic reports knots x10 and a UTC time with no zone on it; taking
+   * either at face value put the fleet at seventy knots and every age an hour
+   * out. VesselAPI does neither — sog is knots and the stamp carries a Z — but
+   * that is checked here rather than believed, because both have already cost
+   * this project a day.
+   */
+  const moving = VA_ROWS.filter((r) => r.sog > 0)
+    .sort((a, b) => b.sog - a.sog)[0];
+  assert.ok(moving && moving.sog < 30,
+    'the fastest in the fixture is a plausible speed, not a scaled one');
+
+  withStore((s) => {
+    VesselApi._apply(String(moving.mmsi), moving, new Date(moving.timestamp));
+    const fix = s.byMmsi[String(moving.mmsi)].fix;
+    assert.strictEqual(fix.sog, moving.sog, 'not divided by ten');
+    assert.strictEqual(fix.cog, moving.cog);
+    assert.strictEqual(fix.navStatus, moving.nav_status);
+    assert.strictEqual(fix.lat, moving.latitude);
+    assert.strictEqual(fix.source, null,
+      'they do not say shore or satellite, so we do not claim either');
+  });
+});
+
+test('a stamp with a zone on it is not given a second one', () => {
+  /**
+   * The MarineTraffic adapter appends a Z because theirs have none. Doing the
+   * same here would corrupt a stamp that already carries one — and this
+   * container runs on UTC, where the damage is invisible, so it is asked of a
+   * node that thinks it is in Tokyo.
+   */
+  const { execFileSync } = require('child_process');
+  const script = `
+    global.window = { CONFIG: { vesselApi: {} } };
+    require('${path.join(__dirname, '..', 'js', 'vesselapi.js')}');
+    process.stdout.write(
+      window.VesselApi._parseTime('2026-09-08T22:36:31.138103Z').toISOString());
+  `;
+  ['Asia/Tokyo', 'America/New_York'].forEach((zone) => {
+    const out = execFileSync(process.execPath, ['-e', script], {
+      env: Object.assign({}, process.env, { TZ: zone }), encoding: 'utf8'
+    });
+    assert.strictEqual(out, '2026-09-08T22:36:31.138Z',
+      'parsed in ' + zone + ' it is still the same instant');
+  });
+});
+
+test('a vessel that is not ours is reported rather than quietly dropped', () => {
+  /**
+   * Everything in the first real answer was ours, which is the finding that
+   * separates this provider from AISstream — whose MMSI filter returned almost
+   * nothing and whose unfiltered feed returned twenty-six thousand vessels. If
+   * that ever stops being true, the cost model stops being true with it, and
+   * nothing else on the board would say so.
+   */
+  withStore(() => {
+    VesselApi.mmsiList = REAL_FLEET.map((y) => String(y.mmsi));
+    VesselApi.since = null;
+    const audit = VesselApi._done(VA_ROWS.concat([{
+      mmsi: 244660000, vessel_name: 'A STRANGER',
+      latitude: 52.1, longitude: 4.3, timestamp: VA_ROWS[0].timestamp
+    }]), 1, false);
+    assert.deepStrictEqual(audit.strangers, ['244660000']);
+  });
+});
+
+test('a page is not a fleet, and the audit says how far back it reached', () => {
+  /**
+   * Twenty records held twelve yachts over four minutes. Read as coverage that
+   * says twelve of sixty-one and this provider gets written off on a number
+   * that means nothing: the other forty-nine had simply not spoken yet. The
+   * window is what makes the count readable.
+   */
+  withStore(() => {
+    VesselApi.mmsiList = REAL_FLEET.map((y) => String(y.mmsi));
+    VesselApi.since = null;
+    const audit = VesselApi._done(VA_ROWS, 1, false);
+    assert.ok(audit.windowMinutes > 3 && audit.windowMinutes < 6,
+      'the window is minutes, and it is measured: ' + audit.windowMinutes);
+    assert.ok(audit.heard < REAL_FLEET.length / 2,
+      'and it holds nothing like the whole fleet');
+    assert.strictEqual(audit.reports, VA_ROWS.length);
+  });
+});
+
+test('the watermark means a second read applies nothing already seen', () => {
+  /**
+   * This is the whole economics of a stream. Reading only what is new makes a
+   * poll cost a request per page of NEW reports, so looking every three minutes
+   * and looking every thirty cost very nearly the same — and the board can be
+   * three minutes fresh for the price of being half an hour stale.
+   */
+  withStore((s) => {
+    VesselApi.since = null;
+    VesselApi._done(VA_ROWS, 1, false);
+    const after = s.messageCount;
+    const mark = VesselApi.since;
+    assert.ok(mark instanceof Date, 'a watermark was set');
+
+    VesselApi._done(VA_ROWS, 1, false);
+    assert.strictEqual(s.messageCount, after,
+      'the same reports a second time change nothing');
+    assert.strictEqual(VesselApi.since.getTime(), mark.getTime(),
+      'and the watermark does not move backwards');
+  });
+});
+
+test('paging stops when the cursor is ignored, and inside its budget', () => {
+  /**
+   * Two ways a stream reader empties a month's allowance in an afternoon, both
+   * silent on the board — the positions simply stop moving.
+   *
+   * A cursor sent back under a name the server does not accept returns page one
+   * again, for ever. And a poll with no ceiling follows a stream that has
+   * started repeating itself as far as it goes. Driven here through a stand-in
+   * fetch, in a second node so the fake cannot leak into the rest of the suite.
+   */
+  const { execFileSync } = require('child_process');
+  const run = (mode, cfg) => {
+    const script = `
+      global.window = {};
+      global.localStorage = { getItem() { return null; }, setItem() {}, removeItem() {} };
+      const load = (f) => require('${path.join(__dirname, '..')}/' + f);
+      ['config.js', 'fleet.js', 'data/mid.js', 'data/ports.js', 'js/geo.js',
+       'js/format.js', 'js/store.js', 'js/vesselapi.js'].forEach(load);
+      const W = global.window;
+      Object.assign(W.CONFIG.vesselApi, ${JSON.stringify(cfg)});
+      W.Store.init(W.FLEET);
+      let served = 0;
+      W.fetch = function () {
+        served++;
+        const at = new Date(Date.now() - served * 1000).toISOString();
+        const page = '${mode}' === 'ignore'
+          ? { vesselPositions: [{ mmsi: W.FLEET[0].mmsi, latitude: 40, longitude: 5,
+                                  timestamp: '2020-01-02T10:00:00.000Z' }],
+              nextToken: 'T' + served }
+          : { vesselPositions: [{ mmsi: W.FLEET[served % 40].mmsi, latitude: 40,
+                                  longitude: 5, timestamp: at }],
+              nextToken: 'T' + served };
+        return Promise.resolve({ ok: true, json: function () { return Promise.resolve(page); } });
+      };
+      W.VesselApi.start('K', W.FLEET.map((y) => String(y.mmsi)));
+      // The interval only, not stop(): stopping sets the flag the paging loop
+      // itself checks, so the run under test would end after its first page.
+      clearInterval(W.VesselApi.timer);
+      setTimeout(function () {
+        process.stdout.write(JSON.stringify({
+          calls: W.VesselApi.calls, error: W.VesselApi.lastError
+        }));
+      }, 200);
+    `;
+    return JSON.parse(execFileSync(process.execPath, ['-e', script], { encoding: 'utf8' }));
+  };
+
+  const ignored = run('ignore', { backfillPages: 20 });
+  assert.strictEqual(ignored.calls, 2,
+    'one wasted request to notice, and then it stops');
+  assert.ok(/cursorParam/.test(ignored.error || ''),
+    'and it says what to set: ' + ignored.error);
+
+  const budgeted = run('walk', { backfillPages: 5 });
+  assert.strictEqual(budgeted.calls, 5, 'a poll never exceeds its budget');
+  assert.strictEqual(budgeted.error, null, 'and that is not an error');
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

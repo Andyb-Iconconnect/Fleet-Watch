@@ -1,0 +1,418 @@
+{
+  "vesselPositions": [
+    {
+      "mmsi": 248771000,
+      "imo": 9824837,
+      "vessel_name": "MY FAN TOO",
+      "latitude": 40,
+      "longitude": 5,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5,
+          40
+        ]
+      },
+      "timestamp": "2020-01-02T10:04:16.138Z",
+      "processed_timestamp": "2020-01-02T10:04:34.596Z",
+      "suspected_glitch": false,
+      "cog": 200.1,
+      "sog": 0,
+      "heading": 24,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 310799000,
+      "imo": 9814351,
+      "vessel_name": "ANAWA",
+      "latitude": 40.11,
+      "longitude": 5.13,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.13,
+          40.11
+        ]
+      },
+      "timestamp": "2020-01-02T10:03:44.675Z",
+      "processed_timestamp": "2020-01-02T10:03:46.640Z",
+      "suspected_glitch": false,
+      "cog": 65.8,
+      "sog": 10,
+      "heading": 68,
+      "nav_status": 0
+    },
+    {
+      "mmsi": 319220900,
+      "imo": 9946166,
+      "vessel_name": "ALISA",
+      "latitude": 40.22,
+      "longitude": 5.26,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.26,
+          40.22
+        ]
+      },
+      "timestamp": "2020-01-02T10:03:40.552Z",
+      "processed_timestamp": "2020-01-02T10:03:42.597Z",
+      "suspected_glitch": false,
+      "cog": 200.4,
+      "sog": 0,
+      "heading": 9,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 232058397,
+      "vessel_name": "NO RUSH",
+      "latitude": 40.33,
+      "longitude": 5.39,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.39,
+          40.33
+        ]
+      },
+      "timestamp": "2020-01-02T10:03:32.410Z",
+      "processed_timestamp": "2020-01-02T10:03:34.598Z",
+      "suspected_glitch": true,
+      "sog": 0,
+      "heading": 88
+    },
+    {
+      "mmsi": 339302000,
+      "imo": 1012610,
+      "vessel_name": "KAOS",
+      "latitude": 40.44,
+      "longitude": 5.52,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.52,
+          40.44
+        ]
+      },
+      "timestamp": "2020-01-02T10:03:14.112Z",
+      "processed_timestamp": "2020-01-02T10:03:16.594Z",
+      "suspected_glitch": false,
+      "cog": 76.8,
+      "sog": 0,
+      "heading": 281,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 319252700,
+      "imo": 9894131,
+      "vessel_name": "MILELE",
+      "latitude": 40.55,
+      "longitude": 5.65,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.65,
+          40.55
+        ]
+      },
+      "timestamp": "2020-01-02T10:01:33.067Z",
+      "processed_timestamp": "2020-01-02T10:02:39.595Z",
+      "suspected_glitch": false,
+      "cog": 205.6,
+      "sog": 0,
+      "heading": 248,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 538072789,
+      "imo": 9948994,
+      "vessel_name": "LIMERENCE",
+      "latitude": 40.66,
+      "longitude": 5.78,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.78,
+          40.66
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:55.288Z",
+      "processed_timestamp": "2020-01-02T10:01:35.595Z",
+      "suspected_glitch": false,
+      "sog": 0,
+      "heading": 57,
+      "nav_status": 1
+    },
+    {
+      "mmsi": 319220900,
+      "imo": 9946166,
+      "vessel_name": "ALISA",
+      "latitude": 40.77,
+      "longitude": 5.91,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          5.91,
+          40.77
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:44.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.116Z",
+      "suspected_glitch": false,
+      "cog": 200.4,
+      "sog": 0,
+      "heading": 9,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 310799000,
+      "imo": 9814351,
+      "vessel_name": "ANAWA",
+      "latitude": 40.88,
+      "longitude": 6.04,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.04,
+          40.88
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:43.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.715Z",
+      "suspected_glitch": false,
+      "cog": 65.9,
+      "sog": 10,
+      "heading": 68,
+      "nav_status": 0
+    },
+    {
+      "mmsi": 232058397,
+      "vessel_name": "NO RUSH",
+      "latitude": 40.99,
+      "longitude": 6.17,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.17,
+          40.99
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:34.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.186Z",
+      "suspected_glitch": false,
+      "sog": 0,
+      "heading": 88
+    },
+    {
+      "mmsi": 310799000,
+      "imo": 9814351,
+      "vessel_name": "ANAWA",
+      "latitude": 41.1,
+      "longitude": 6.3,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.3,
+          41.1
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:33.684Z",
+      "processed_timestamp": "2020-01-02T10:00:52.479Z",
+      "suspected_glitch": false,
+      "cog": 66,
+      "sog": 10,
+      "heading": 68,
+      "nav_status": 0
+    },
+    {
+      "mmsi": 235080247,
+      "imo": 1010595,
+      "vessel_name": "MARY JEAN II",
+      "latitude": 41.21,
+      "longitude": 6.43,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.43,
+          41.21
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:33.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.062Z",
+      "suspected_glitch": false,
+      "cog": 303,
+      "sog": 16.4,
+      "heading": 302,
+      "nav_status": 0
+    },
+    {
+      "mmsi": 319012900,
+      "imo": 9571105,
+      "vessel_name": "RADIANT",
+      "latitude": 41.32,
+      "longitude": 6.56,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.56,
+          41.32
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:27.238Z",
+      "processed_timestamp": "2020-01-02T10:00:40.595Z",
+      "suspected_glitch": false,
+      "cog": 210,
+      "sog": 0,
+      "heading": 68,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 319012900,
+      "imo": 9571105,
+      "vessel_name": "RADIANT",
+      "latitude": 41.43,
+      "longitude": 6.69,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.69,
+          41.43
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:27.000Z",
+      "processed_timestamp": "2020-01-02T10:01:51.497Z",
+      "suspected_glitch": false,
+      "cog": 210,
+      "sog": 0,
+      "heading": 68,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 233219000,
+      "imo": 1000069,
+      "vessel_name": "LADY BEATRICE",
+      "latitude": 41.54,
+      "longitude": 6.82,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.82,
+          41.54
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:24.354Z",
+      "processed_timestamp": "2020-01-02T10:00:36.596Z",
+      "suspected_glitch": false,
+      "cog": 284,
+      "sog": 0,
+      "heading": 317,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 233219000,
+      "imo": 1000069,
+      "vessel_name": "LADY BEATRICE",
+      "latitude": 41.65,
+      "longitude": 6.95,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          6.95,
+          41.65
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:24.000Z",
+      "processed_timestamp": "2020-01-02T10:01:49.869Z",
+      "suspected_glitch": false,
+      "cog": 284,
+      "sog": 0,
+      "heading": 317,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 319178800,
+      "imo": 9845300,
+      "vessel_name": "ARKADIA",
+      "latitude": 41.76,
+      "longitude": 7.08,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          7.08,
+          41.76
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:19.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.467Z",
+      "suspected_glitch": false,
+      "cog": 171.5,
+      "sog": 0,
+      "heading": 80,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 339302000,
+      "imo": 1012610,
+      "vessel_name": "KAOS",
+      "latitude": 40,
+      "longitude": 7.21,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          7.21,
+          40
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:14.599Z",
+      "processed_timestamp": "2020-01-02T10:00:21.595Z",
+      "suspected_glitch": false,
+      "cog": 95.9,
+      "sog": 0,
+      "heading": 281,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 339302000,
+      "imo": 1012610,
+      "vessel_name": "KAOS",
+      "latitude": 40.11,
+      "longitude": 7.34,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          7.34,
+          40.11
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:14.000Z",
+      "processed_timestamp": "2020-01-02T10:01:49.883Z",
+      "suspected_glitch": false,
+      "cog": 95.9,
+      "sog": 0,
+      "heading": 281,
+      "nav_status": 5
+    },
+    {
+      "mmsi": 319060000,
+      "imo": 9417438,
+      "vessel_name": "SIREN",
+      "latitude": 40.22,
+      "longitude": 7.47,
+      "location": {
+        "type": "Point",
+        "coordinates": [
+          7.47,
+          40.22
+        ]
+      },
+      "timestamp": "2020-01-02T10:00:00.000Z",
+      "processed_timestamp": "2020-01-02T10:00:50.841Z",
+      "suspected_glitch": false,
+      "cog": 174.1,
+      "sog": 0,
+      "heading": 262,
+      "nav_status": 5
+    }
+  ],
+  "nextToken": "eyJ0IjoiMjAyNi0wOS0wOFQyMjozMjoxNVoiLCJpZCI6IjZiZTk0NzM0LTY3ZmYtNGM0OC1hYjJhLWEwNmVjNWFmOTc0NyJ9"
+}

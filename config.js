@@ -68,7 +68,13 @@ window.CONFIG = {
    *   'marinetraffic' paid, an HTTP endpoint you poll. Where this fleet was
    *                   validated in the first place, so it is known to have all
    *                   sixty-one, and it says whether a position came from a
-   *                   shore receiver or a satellite.
+   *                   shore receiver or a satellite. No tier reaches sixty
+   *                   vessels, so it is on the shelf.
+   *   'vesselapi'     paid, and a STREAM rather than a snapshot: reports
+   *                   newest first, a page at a time, with a cursor. All
+   *                   sixty-one for one request, and the first real answer
+   *                   contained nothing but ours — the MMSI filter works,
+   *                   which AISstream's did not.
    */
   provider: 'aisstream',
 
@@ -93,6 +99,44 @@ window.CONFIG = {
     // asking for 180 without it is asking for a refusal.
     timespanMinutes: 60,
     satellite: false
+  },
+
+  /**
+   * VesselAPI, when `provider` names it.
+   *
+   * A STREAM, and every setting here follows from that. Reading a stream costs
+   * a request per page of reports however often you look, so `pollMinutes` is
+   * very nearly free to lower — the board can be two minutes fresh for what it
+   * costs to be twenty — while `pageSize` divides the bill directly. At the
+   * rate the fleet was observed talking, twenty reports a page is about ten
+   * thousand requests a month and two hundred a page is about a thousand.
+   *
+   * `endpoint` exists because this is a server-side API. A page calling it is
+   * refused by CORS, and a key in an Authorization header makes the browser ask
+   * permission first with an OPTIONS request that api.vesselapi.com has no
+   * reason to answer. Point it at the relay, which holds the key as well.
+   *
+   * TWO OF THESE ARE GUESSES AND ARE HERE SO THEY CAN BE CORRECTED WITHOUT
+   * TOUCHING CODE. A response names its cursor `nextToken` but says nothing
+   * about what to call it going back, and nothing about how to ask for a bigger
+   * page. If `cursorParam` is wrong the adapter notices — page two comes back
+   * as page one — and stops rather than re-reading one page down the allowance.
+   */
+  vesselApi: {
+    endpoint: 'https://api.vesselapi.com/v1/vessels/positions',
+    pollMinutes: 3,
+    // How many pages a routine poll may spend. A ceiling, not a target: a
+    // caught-up board usually reads one. It exists so that something upstream
+    // repeating itself cannot empty a month's allowance in an afternoon.
+    pagesPerPoll: 4,
+    // The first look has an empty board to fill and no watermark to stop at,
+    // so it is allowed to reach further back.
+    backfillPages: 12,
+    // Their default page is twenty. Anything larger divides the monthly cost by
+    // the same factor — worth knowing exactly what they will serve.
+    pageSize: null,
+    pageParam: 'limit',
+    cursorParam: 'nextToken'
   },
 
   ais: {

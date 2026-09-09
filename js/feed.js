@@ -1,9 +1,10 @@
 /* -----------------------------------------------------------------------------
  * feed.js — where positions come from, decided in one place.
  *
- * There are three: a simulator, a WebSocket that pushes (AISstream) and an
- * HTTP endpoint that is polled (MarineTraffic). The board and the console
- * should not know which is running, and until now they both did — each carried
+ * There are four: a simulator, a WebSocket that pushes (AISstream), an HTTP
+ * endpoint that is polled (MarineTraffic) and a paged stream that is read
+ * forward from a watermark (VesselAPI). The board and the console should not
+ * know which is running, and until now they both did — each carried
  * its own copy of "if there is a key, start the socket, otherwise start the
  * demo", which is two places to edit and two places to get it wrong.
  *
@@ -28,7 +29,8 @@
   Feed.providerFor = function (key) {
     if (!key) return 'demo';
     var named = window.CONFIG.provider;
-    if (named === 'marinetraffic' || named === 'aisstream') return named;
+    if (named === 'marinetraffic' || named === 'aisstream' ||
+        named === 'vesselapi') return named;
     return 'aisstream';
   };
 
@@ -60,6 +62,8 @@
 
     if (provider === 'marinetraffic') {
       window.MarineTraffic.start(key, mmsis());
+    } else if (provider === 'vesselapi') {
+      window.VesselApi.start(key, mmsis());
     } else if (provider === 'aisstream') {
       window.Ais.start(key, mmsis());
     } else {
@@ -81,6 +85,7 @@
     window.Ais.stop();
     window.Demo.stop();
     if (window.MarineTraffic) window.MarineTraffic.stop();
+    if (window.VesselApi) window.VesselApi.stop();
   };
 
   /**
