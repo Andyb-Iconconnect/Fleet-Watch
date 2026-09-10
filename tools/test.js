@@ -97,6 +97,33 @@ function test(name, fn) {
     failed++;
   }
 }
+
+/**
+ * A check that has to wait for something.
+ *
+ * Almost nothing here does — the board's logic is synchronous and deliberately
+ * so — but the history writer talks to a database, and its batching, its
+ * failure handling and its pruning are all promises. The first attempt at this
+ * spun the event loop with a blocking call and every promise sat unsettled,
+ * which reported as four failures that were entirely the test harness's fault.
+ *
+ * So they are queued and awaited after the synchronous run, in order, before
+ * the epilogue counts anything.
+ */
+const deferred = [];
+function testAsync(name, fn) { deferred.push({ name: name, fn: fn }); }
+
+async function runDeferred() {
+  for (const t of deferred) {
+    try {
+      await t.fn();
+      passed++;
+    } catch (e) {
+      console.error('FAIL  ' + t.name + '\n      ' + e.message);
+      failed++;
+    }
+  }
+}
 const close = (a, b, tol, msg) =>
   assert.ok(Math.abs(a - b) <= tol, (msg || '') + ` expected ~${b}, got ${a}`);
 
@@ -5282,8 +5309,48 @@ test('the relay serves the board but not itself', () => {
         s.on('data', (d) => { buf += d; });
         s.on('end', () => resolve(Number((buf.split(' ')[1] || '0'))));
       });
+      /**
+       * A second relay, with a history that answers. The first has no SQL, so
+       * every history question there is answered 503 before anything else is
+       * looked at — which is right, and means the rest can only be checked
+       * against one that has it.
+       */
+      const withHistory = require('http').createServer(
+        require('${path.join(__dirname, '..', 'server', 'app.js')}').create(
+          Object.assign({}, ctx, {
+            history: {
+              enabled: true,
+              read: async () => ({ rows: [{ mmsi: '319012900' }], truncated: false }),
+              stats: () => ({ ready: true })
+            }
+          })).handle);
+      await new Promise((r) => withHistory.listen(0, r));
+      const askH = async (p) => {
+        const r = await fetch('http://127.0.0.1:' + withHistory.address().port + p);
+        return { status: r.status, body: await r.json() };
+      };
+      const ours = Object.keys(ctx.store.byMmsi)[0];
+
       const result = {
         board: await ask('/'),
+        historyOff: await ask('/api/history?mmsi=319012900&from=2026-06-01&to=2026-07-01'),
+        historyOk: await askH('/api/history?mmsi=' + ours + '&from=2026-06-01&to=2026-07-01'),
+        badMmsi: await askH('/api/history?mmsi=banana&from=2026-06-01&to=2026-07-01'),
+        badDates: await askH('/api/history?mmsi=' + ours + '&from=2026-07-01&to=2026-06-01'),
+        noDates: await askH('/api/history?mmsi=' + ours),
+        notOurs: await askH('/api/history?mmsi=244660000&from=2026-06-01&to=2026-07-01'),
+        historyBroken: await (async () => {
+          const broken = require('http').createServer(
+            require('${path.join(__dirname, '..', 'server', 'app.js')}').create(
+              Object.assign({}, ctx, {
+                history: { enabled: true, ready: false,
+                           lastError: 'Could not connect', stats: () => ({}) }
+              })).handle);
+          await new Promise((r) => broken.listen(0, r));
+          const res = await fetch('http://127.0.0.1:' + broken.address().port +
+            '/api/history?mmsi=' + ours + '&from=2026-06-01&to=2026-07-01');
+          return { status: res.status, body: await res.json() };
+        })(),
         script: await ask('/js/map.js'),
         fleet: await ask('/api/fleet'),
         nonsense: await ask('/api/nothing'),
@@ -5320,6 +5387,35 @@ test('the relay serves the board but not itself', () => {
   assert.strictEqual(r.fleet.cache, 'no-store');
   assert.strictEqual(r.board.cache, 'no-cache',
     'and a wall must not still be running an old build after a deployment');
+
+  /**
+   * The history endpoint refuses what it cannot answer, in words.
+   *
+   * The window is required rather than defaulted to everything: a query with no
+   * dates over a season of a busy fleet is the one that gets run once by
+   * accident and then blamed on the database. And an MMSI that is not ours is
+   * a 404 rather than an empty list, which would read as "she has never moved".
+   */
+  assert.strictEqual(r.historyOff.status, 503, 'no SQL is said, not faked');
+  assert.strictEqual(r.historyOk.status, 200);
+  assert.strictEqual(r.historyOk.body.positions.length, 1);
+  assert.strictEqual(r.historyOk.body.truncated, false);
+  assert.strictEqual(r.badMmsi.status, 400);
+  assert.strictEqual(r.badDates.status, 400, 'to must be after from');
+  assert.strictEqual(r.noDates.status, 400, 'and a window is required');
+  assert.strictEqual(r.notOurs.status, 404, 'a vessel that is not ours');
+
+  /**
+   * And a database that is configured but unreachable is SAID.
+   *
+   * It answered 200 and an empty passage while /api/health, three lines away,
+   * reported that the connection had failed — a yacht that had crossed the
+   * Atlantic reading as one that had never moved. Found by pointing the relay
+   * at a dead server and asking it a question anyway.
+   */
+  assert.strictEqual(r.historyBroken.status, 503);
+  assert.ok(/not available/.test(r.historyBroken.body.error),
+    'with the reason: ' + r.historyBroken.body.error);
 });
 
 test('the board takes tracks from the relay once, and only when they arrive', () => {
@@ -5375,7 +5471,282 @@ test('a relay that answers with something else is not read as an empty sea', () 
   } finally { window.Store = original; }
 });
 
+/* -----------------------------------------------------------------------------
+ * The history table.
+ *
+ * Nothing in this sandbox speaks TDS, so what is checked here is everything
+ * ABOVE the driver: what is worth recording, how it is batched, what a failure
+ * does, and the shape of the SQL. The driver itself and the statements meeting
+ * a real server are checked by `node server/check-sql.js`, once, on the Web
+ * App — because writing SQL against documentation is exactly how the
+ * MarineTraffic adapter came to be wrong in three ways.
+ * ------------------------------------------------------------------------- */
+
+const historyFile = require(path.join(__dirname, '..', 'server', 'history.js'));
+const sqlFile = require(path.join(__dirname, '..', 'server', 'sql.js'));
+
+// A database that records what it was asked to do, and can be told to fail.
+function fakeDb(behaviour) {
+  const b = behaviour || {};
+  let n = 0;
+  return {
+    statements: [],
+    exec(sql, params) {
+      this.statements.push({ sql, params });
+      if (b.failOn && b.failOn(++n, sql)) return Promise.reject(new Error('server busy'));
+      return Promise.resolve(b.rowCount ? b.rowCount(n, sql) : 1);
+    },
+    query(sql, params) {
+      this.statements.push({ sql, params });
+      return Promise.resolve(b.rows || []);
+    }
+  };
+}
+
+const historyConfig = {
+  history: { keepDays: 365, minMinutes: 30, minNm: 0.05, maxRows: 5000 }
+};
+
+test('a yacht alongside does not write twenty rows an hour', () => {
+  /**
+   * She broadcasts every three minutes for a fortnight without moving an inch.
+   * Recorded literally that is six and a half thousand identical rows per
+   * yacht, and a season of the fleet would be tens of millions of rows saying
+   * nothing. A row when she has moved, or when half an hour has passed, keeps
+   * the berth legible at two an hour.
+   */
+  const h = historyFile.create(historyConfig, fakeDb(), () => {});
+  const start = Date.UTC(2026, 8, 8, 6, 0, 0);
+  let recorded = 0;
+
+  for (let minute = 0; minute <= 180; minute += 3) {
+    const fix = { lat: 43.5500, lon: 7.1200, at: new Date(start + minute * 60000) };
+    if (h.shouldRecord('235070865', fix)) {
+      recorded++;
+      h.lastRecorded['235070865'] = fix;
+    }
+  }
+  // Three hours alongside: the first, then one every half hour.
+  assert.strictEqual(recorded, 7, 'two an hour, not twenty');
+});
+
+test('a yacht under way is recorded whenever she has moved', () => {
+  const h = historyFile.create(historyConfig, fakeDb(), () => {});
+  const start = Date.UTC(2026, 8, 8, 6, 0, 0);
+  let recorded = 0;
+  for (let step = 0; step < 20; step++) {
+    // Roughly a mile a step: plainly further than the threshold.
+    const fix = { lat: 43.5 + step * 0.016, lon: 7.1, at: new Date(start + step * 60000) };
+    if (h.shouldRecord('235070865', fix)) { recorded++; h.lastRecorded['235070865'] = fix; }
+  }
+  assert.strictEqual(recorded, 20, 'every one of them');
+});
+
+test('the record is taken from the store, so a refused fix cannot reach it', () => {
+  /**
+   * The store already refuses an impossible coordinate, a vessel that is not
+   * ours, and a fix older than the one it holds. Collecting from it rather than
+   * from the reader means the table can never disagree with the board about
+   * where a yacht was, and a second copy of those rules does not have to exist.
+   */
+  const relayStore2 = require(path.join(__dirname, '..', 'server', 'store.js'));
+  const s = relayStore2.create([{ mmsi: 235070865, name: 'A' },
+                                { mmsi: 319012900, name: 'B' }], {});
+  s.applyFix('235070865', { lat: 43.5, lon: 7.1, at: new Date(), sog: 8 });
+  s.applyFix('319012900', { lat: 91, lon: 7.1, at: new Date() });   // refused
+
+  const h = historyFile.create(historyConfig, fakeDb(), () => {});
+  const rows = h.collect(s);
+  assert.strictEqual(rows.length, 1);
+  assert.strictEqual(rows[0].mmsi, '235070865');
+  assert.strictEqual(rows[0].sog, 8);
+  assert.ok(rows[0].reported_at instanceof Date, 'a time, not a string');
+});
+
+testAsync('rows go a hundred at a time, inside what TDS will carry', async () => {
+  /**
+   * A statement may take 2100 parameters and each row uses nine. A row at a
+   * time would be a round trip each — sixty-one of them on a first backfill to
+   * write what fits in one.
+   */
+  const h = historyFile.create(historyConfig, fakeDb(), () => {});
+  const rows = [];
+  for (let i = 0; i < 250; i++) {
+    rows.push({ mmsi: String(235070000 + i), reported_at: new Date(Date.UTC(2026, 8, 8, 0, i)),
+                lat: 43 + i * 0.01, lon: 7, sog: null, cog: null, heading: null,
+                nav_status: null, source: null });
+  }
+  const stmt = h.statement(rows.slice(0, 100));
+  assert.strictEqual(Object.keys(stmt.params).length, 900);
+  assert.ok(Object.keys(stmt.params).length < 2100, 'inside the parameter limit');
+  assert.strictEqual((stmt.sql.match(/\(@/g) || []).length, 100, 'one tuple per row');
+  assert.ok(/^INSERT INTO dbo\.vessel_positions \(mmsi, reported_at/.test(stmt.sql));
+
+  const db = fakeDb();
+  const h2 = historyFile.create(historyConfig, db, () => {});
+  h2.ready = true;
+  const store = { byMmsi: rowsAsStore(rows) };
+  const written = await h2.write(store);
+  assert.strictEqual(db.statements.length, 3, '250 rows is three statements');
+  assert.strictEqual(written, 250);
+
+  /**
+   * And nothing the second time.
+   *
+   * A written row leaves a mark, and the mark is what "has she moved since"
+   * is asked against. Without it every write re-sends the whole fleet for
+   * ever: the table survives on its duplicate key, so nothing would look
+   * wrong — it would just be sending a hundred rows a minute to say nothing
+   * had happened.
+   */
+  assert.strictEqual(await h2.write(store), 0, 'nothing has moved since');
+  assert.strictEqual(db.statements.length, 3, 'so nothing was sent');
+});
+
+function rowsAsStore(rows) {
+  const byMmsi = {};
+  rows.forEach((r) => {
+    byMmsi[r.mmsi] = { fix: {
+      lat: r.lat, lon: r.lon, sog: r.sog, cog: r.cog, heading: r.heading,
+      navStatus: r.nav_status, source: r.source, at: r.reported_at.toISOString()
+    } };
+  });
+  return byMmsi;
+}
+
+testAsync('a database that is briefly unreachable does not stop the board', async () => {
+  /**
+   * The feed is the job; this is a record of it. A wall board that went blank
+   * because a database was busy would be a worse system than one with no
+   * history at all — so the failure is caught, counted, and reported on
+   * /api/health, and the relay carries on.
+   */
+  const db = fakeDb({ failOn: () => true });
+  const h = historyFile.create(historyConfig, db, () => {});
+  h.ready = true;
+  const store = { byMmsi: { '235070865': { fix: {
+    lat: 43.5, lon: 7.1, sog: 8, cog: null, heading: null, navStatus: null,
+    source: null, at: new Date().toISOString() } } } };
+
+  const written = await h.write(store);
+  assert.strictEqual(written, 0);
+  assert.ok(/server busy/.test(h.lastError), 'and it says why: ' + h.lastError);
+  // And the mark did NOT move: the next attempt writes the row it lost.
+  assert.strictEqual(h.lastRecorded['235070865'], undefined,
+    'a failed batch leaves no hole in the record');
+});
+
+test('the table dedupes itself, because duplicates are routine', () => {
+  /**
+   * The relay sees the same fix more than once as a matter of course: the
+   * provider carries duplicate reports, and the last page of every poll
+   * deliberately overlaps the previous one — that overlap is how it knows it
+   * has caught up. Without IGNORE_DUP_KEY one repeated row fails the whole
+   * batch and takes the new positions with it, and it would only ever show up
+   * in production.
+   */
+  assert.ok(/PRIMARY KEY CLUSTERED \(mmsi, reported_at\)/.test(historyFile.CREATE));
+  assert.ok(/IGNORE_DUP_KEY = ON/.test(historyFile.CREATE));
+  // And it is created only if it is not there: a restart must not drop a season.
+  assert.ok(/IF OBJECT_ID\('dbo\.vessel_positions', 'U'\) IS NULL/.test(historyFile.CREATE));
+  assert.ok(!/DROP TABLE/i.test(historyFile.CREATE));
+});
+
+testAsync('old rows go in blocks, so pruning never blocks the writes', async () => {
+  /**
+   * One DELETE over a year of rows holds a lock long enough to stall the
+   * writes behind it, and the writes are the part that matters.
+   */
+  let calls = 0;
+  const db = fakeDb({ rowCount: () => (++calls < 3 ? 5000 : 0) });
+  const h = historyFile.create(historyConfig, db, () => {});
+  h.ready = true;
+  const removed = await h.prune(Date.UTC(2026, 8, 8));
+  assert.strictEqual(removed, 10000);
+  assert.strictEqual(db.statements.length, 3, 'and it stops when there is nothing left');
+  assert.ok(/DELETE TOP \(5000\)/.test(db.statements[0].sql));
+  const cutoff = db.statements[0].params.cutoff;
+  assert.strictEqual(cutoff.getTime(), Date.UTC(2026, 8, 8) - 365 * 86400000);
+});
+
+testAsync('a truncated answer says so', async () => {
+  // A caller that silently received the first five thousand rows would draw a
+  // passage that stops in the middle of the sea.
+  const rows = new Array(10).fill(0).map((_, i) => ({ mmsi: '235070865', lat: i }));
+  const h = historyFile.create(historyConfig, fakeDb({ rows: rows }), () => {});
+  h.ready = true;
+  const capped = await h.read('235070865', new Date(0), new Date(), 10);
+  assert.strictEqual(capped.rows.length, 10);
+  assert.strictEqual(capped.truncated, true);
+
+  const whole = await h.read('235070865', new Date(0), new Date(), 50);
+  assert.strictEqual(whole.truncated, false,
+    'ten rows out of fifty asked for is all of them');
+
+  /**
+   * And a table that is not there refuses rather than answering nothing — to
+   * every caller, not only over HTTP. server/check-sql.js reads a row back to
+   * prove the round trip works, and an empty list handed to that would report
+   * a broken database as a working one.
+   */
+  const notReady = historyFile.create(historyConfig, fakeDb(), () => {});
+  notReady.lastError = 'Could not connect';
+  await notReady.read('235070865', new Date(0), new Date(), 10).then(
+    () => { throw new Error('it answered instead of refusing'); },
+    (err) => {
+      assert.ok(/not available/.test(err.message), err.message);
+      assert.ok(/Could not connect/.test(err.message), 'and says why');
+    });
+});
+
+test('the connection Azure already made is the one that is used', () => {
+  /**
+   * A Web App with a linked SQL database is handed an ADO.NET connection string
+   * in SQLAZURECONNSTR_<name>. Reading it means IT sets nothing twice, and
+   * nobody retypes a password into a second App Setting.
+   */
+  const linked = sqlFile.settings({
+    SQLAZURECONNSTR_fleet: 'Server=tcp:icon.database.windows.net,1433;' +
+      'Initial Catalog=fleetwatch;User ID=relay;Password=secret;Encrypt=True;'
+  });
+  assert.strictEqual(linked.server, 'icon.database.windows.net', 'without tcp: or the port');
+  assert.strictEqual(linked.database, 'fleetwatch');
+  assert.strictEqual(linked.user, 'relay');
+
+  // An explicit setting wins, so a link can be overridden without unlinking.
+  const overridden = sqlFile.settings({
+    SQLAZURECONNSTR_fleet: 'Server=tcp:old.database.windows.net;Initial Catalog=old;',
+    SQL_SERVER: 'new.database.windows.net'
+  });
+  assert.strictEqual(overridden.server, 'new.database.windows.net');
+  assert.strictEqual(overridden.database, 'old');
+
+  // And no settings at all is not an error — it is a relay without history.
+  assert.strictEqual(sqlFile.settings({}), null);
+  assert.strictEqual(sqlFile.settings({ SQL_SERVER: 'a' }), null,
+    'a server with no database is not enough to try');
+});
+
+test('a whole number goes to SQL as an integer', () => {
+  /**
+   * SELECT TOP (@limit) refuses a float outright. Sending every number as one
+   * works in every test written against a fake and fails on the first real
+   * query — which is the kind of thing this project has already paid for twice.
+   */
+  const TYPES = { Int: 'INT', Float: 'FLOAT', DateTime2: 'DT2', Bit: 'BIT',
+                  NVarChar: 'NVARCHAR' };
+  const stub = { TYPES: TYPES };
+  assert.strictEqual(sqlFile.typeFor(stub, 5000), 'INT');
+  assert.strictEqual(sqlFile.typeFor(stub, 43.55), 'FLOAT');
+  assert.strictEqual(sqlFile.typeFor(stub, new Date()), 'DT2');
+  assert.strictEqual(sqlFile.typeFor(stub, '319012900'), 'NVARCHAR');
+  assert.strictEqual(sqlFile.typeFor(stub, null), 'NVARCHAR',
+    'a null still needs a type declared');
+});
+
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
+
+runDeferred().then(function () {
 
 reachedEnd = true;
 console.log(`\n${passed} checks passed` + (failed ? ` — ${failed} failed, above\n` : '\n'));
@@ -5384,3 +5755,5 @@ console.log(`\n${passed} checks passed` + (failed ? ` — ${failed} failed, abov
 // code under test keeps node alive for ever, and the suite would otherwise hang
 // after printing its result — in CI, a build that times out with nothing named.
 process.exit(failed ? 1 : 0);
+
+});

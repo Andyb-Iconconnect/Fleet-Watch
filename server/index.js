@@ -15,6 +15,8 @@ const path = require('path');
 const configFile = require('./config.js');
 const storeFile = require('./store.js');
 const blobFile = require('./blob.js');
+const sqlFile = require('./sql.js');
+const historyFile = require('./history.js');
 
 function log(msg) {
   // Plain stdout: App Service Log Stream shows it live, and it is the first
@@ -39,8 +41,12 @@ function start(env) {
   });
   const blob = blobFile.create(cfg.snapshotUrl, log);
 
+  const db = sqlFile.create(cfg, log);
+  const history = historyFile.create(cfg, db, log);
+
   const ctx = {
-    config: cfg, store: store, blob: blob, reader: null,
+    config: cfg, store: store, blob: blob, db: db, history: history,
+    reader: null,
     problems: function () { return configFile.problems(cfg); }
   };
 
@@ -119,22 +125,55 @@ async function begin(ctx, fleet) {
       ctx.blob.save(ctx.store.snapshot(true));
     }, Math.max(30, cfg.snapshotSeconds) * 1000);
     if (save.unref) save.unref();
+  }
+
+  /**
+   * The record of where they have been.
+   *
+   * On a timer rather than after each poll, because one provider pushes and the
+   * other is paged and the record should not be able to tell the difference.
+   * `collect` reads the store, so a fix the store refused — impossible, stale,
+   * not ours — can never reach the table.
+   */
+  if (ctx.history.enabled) {
+    log('history: ' + ctx.db.describe());
+    await ctx.history.ensureSchema();
+
+    const record = setInterval(function () {
+      ctx.history.write(ctx.store);
+    }, Math.max(30, cfg.history.writeSeconds) * 1000);
+    if (record.unref) record.unref();
 
     /**
-     * And once on the way out.
-     *
-     * App Service sends SIGTERM before it recycles a container, which is the
-     * one moment the in-memory fleet is both complete and about to be lost.
+     * Pruning is hourly rather than daily so it is never the first thing a
+     * fresh container does. It deletes in blocks and stops when there is
+     * nothing left, so an hourly run on a tidy table costs one query.
      */
-    ['SIGTERM', 'SIGINT'].forEach(function (sig) {
-      process.on(sig, function () {
-        log('shutting down on ' + sig + ' — saving the snapshot');
-        ctx.blob.save(ctx.store.snapshot(true)).then(function () {
-          process.exit(0);
-        }, function () { process.exit(0); });
-      });
-    });
+    const prune = setInterval(function () { ctx.history.prune(); }, 3600000);
+    if (prune.unref) prune.unref();
+    ctx.history.prune();
+  } else if (ctx.db) {
+    log('history: SQL is configured but the recorder did not start');
+  } else {
+    log('no SQL settings, so nothing is keeping a record of where they have been');
   }
+
+  /**
+   * On the way out.
+   *
+   * App Service sends SIGTERM before it recycles a container, which is the one
+   * moment the in-memory fleet is both complete and about to be lost — and the
+   * last couple of minutes of movement have not been written down yet either.
+   */
+  ['SIGTERM', 'SIGINT'].forEach(function (sig) {
+    process.on(sig, function () {
+      log('shutting down on ' + sig);
+      Promise.all([
+        ctx.blob.enabled() ? ctx.blob.save(ctx.store.snapshot(true)) : null,
+        ctx.history.enabled ? ctx.history.write(ctx.store) : null
+      ]).then(function () { process.exit(0); }, function () { process.exit(0); });
+    });
+  });
 }
 
 module.exports = { start: start };

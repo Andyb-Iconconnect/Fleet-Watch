@@ -71,7 +71,35 @@ function read(env) {
      * Azure itself sets.
      */
     instanceId: e.WEBSITE_INSTANCE_ID || null,
-    allowMultipleReaders: /^(1|true|yes)$/i.test(e.ALLOW_MULTIPLE_READERS || '')
+    allowMultipleReaders: /^(1|true|yes)$/i.test(e.ALLOW_MULTIPLE_READERS || ''),
+
+    /**
+     * Where the fleet has been, as opposed to where it is.
+     *
+     * The relay holds the present — one position each and a day's trail, which
+     * is what a board draws. "Where was she in June" is a different question
+     * and a query rather than a scan, so it lives in Azure SQL. All of this is
+     * optional: with no SQL settings the relay behaves exactly as it did.
+     *
+     * `minNm` and `minMinutes` are what keep it from being useless. A yacht
+     * alongside broadcasts every three minutes for a fortnight without moving,
+     * and recorded literally that is six and a half thousand identical rows per
+     * yacht per fortnight. A row when she has moved, or when half an hour has
+     * passed, keeps a berth legible at two rows an hour instead of twenty.
+     */
+    history: {
+      keepDays: Number(e.HISTORY_KEEP_DAYS) || 365,
+      minMinutes: e.HISTORY_MIN_MINUTES == null ? 30 : Number(e.HISTORY_MIN_MINUTES),
+      // The same threshold the board uses before it adds a point to a trail, so
+      // the record and the chart agree about what counts as having moved.
+      minNm: e.HISTORY_MIN_NM == null ? 0.05 : Number(e.HISTORY_MIN_NM),
+      writeSeconds: Number(e.HISTORY_WRITE_SECONDS) || 120,
+      maxRows: Number(e.HISTORY_MAX_ROWS) || 5000
+    },
+
+    // Kept so server/sql.js can find whichever of the several names Azure may
+    // have given the connection string, without a second copy of the rules.
+    env: e
   };
 
   return cfg;

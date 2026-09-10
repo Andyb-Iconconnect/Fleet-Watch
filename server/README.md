@@ -184,6 +184,136 @@ to talking to AISstream directly, with a key typed at the screen, and says so.
 
 ---
 
+## Where they have been
+
+The relay holds the present — one position per yacht and a day's trail, which
+is what a board draws. "Where was she in June", "how much did she move last
+season", "when did she last leave Antibes" is a different question, and it is a
+query rather than a scan. That lives in Azure SQL.
+
+It is **entirely optional**. With no SQL settings the relay behaves exactly as
+it did, and says so in the log. A database that is unreachable is reported on
+`/api/health` and the board carries on: the feed is the job, this is a record
+of it, and a wall going blank because a database was busy would be a worse
+system than one with no history at all.
+
+### Settings
+
+If the database is already linked to the Web App, Azure has written the
+connection string into `SQLAZURECONNSTR_<name>` and **the relay finds it on its
+own** — nothing to set. Otherwise:
+
+| Setting | |
+|---|---|
+| `SQL_CONNECTION_STRING` | an ADO.NET connection string, or |
+| `SQL_SERVER` + `SQL_DATABASE` | and `SQL_USER` + `SQL_PASSWORD` for SQL auth |
+
+**Leave the user and password out to use the Web App's own identity**, which is
+the better arrangement — no secret anywhere. Turn on the system-assigned
+identity (Identity → System assigned → On), then in the database:
+
+```sql
+CREATE USER [<the Web App name>] FROM EXTERNAL PROVIDER;
+ALTER ROLE db_datareader ADD MEMBER [<the Web App name>];
+ALTER ROLE db_datawriter ADD MEMBER [<the Web App name>];
+ALTER ROLE db_ddladmin   ADD MEMBER [<the Web App name>];
+```
+
+`db_ddladmin` is only needed the first time, so the relay can create its table.
+Drop it afterwards if you would rather.
+
+| Optional | Default | |
+|---|---|---|
+| `HISTORY_KEEP_DAYS` | `365` | rows older than this are pruned |
+| `HISTORY_MIN_NM` | `0.05` | how far she must move to earn a row |
+| `HISTORY_MIN_MINUTES` | `30` | or how long since the last one |
+| `HISTORY_WRITE_SECONDS` | `120` | how often rows are written |
+| `HISTORY_MAX_ROWS` | `5000` | cap on one query's answer |
+
+### Run the check once, before trusting any of it
+
+```
+npm run check-sql
+```
+
+on the Web App (Development Tools → SSH). It connects, creates the table,
+writes a row, **writes it again**, reads it back, checks the values survived
+the round trip, and deletes it. Each step says ok or what to fix.
+
+This matters more than it sounds. Nothing in the development environment speaks
+SQL Server, so the statements and the driver wiring were written against
+documentation and have never met a real database. That is exactly the position
+the MarineTraffic adapter was in, and it was wrong in three ways that only
+appeared the first time it met a real server.
+
+The "write it twice" step is the one to watch. The relay writes duplicates as a
+matter of course — the provider carries repeated reports, and the last page of
+every poll deliberately overlaps the previous one, because that overlap is how
+it knows it has caught up. The table's primary key is created
+`WITH (IGNORE_DUP_KEY = ON)` so a repeat is dropped and the rest of the batch
+still lands. Without it, one duplicate fails a whole batch of good positions,
+and it would only ever happen in production.
+
+### The table
+
+```sql
+CREATE TABLE dbo.vessel_positions (
+  mmsi        VARCHAR(9)   NOT NULL,
+  reported_at DATETIME2(0) NOT NULL,
+  lat         DECIMAL(9,6) NOT NULL,
+  lon         DECIMAL(9,6) NOT NULL,
+  sog         DECIMAL(5,1) NULL,
+  cog         DECIMAL(5,1) NULL,
+  heading     SMALLINT     NULL,
+  nav_status  TINYINT      NULL,
+  source      VARCHAR(8)   NULL,
+  CONSTRAINT pk_vessel_positions PRIMARY KEY CLUSTERED (mmsi, reported_at)
+    WITH (IGNORE_DUP_KEY = ON)
+);
+```
+
+The key is also the index for the only question anyone asks: one yacht, between
+two dates.
+
+### How much it holds
+
+A yacht alongside broadcasts every three minutes for a fortnight without moving
+an inch. Recorded literally that is six and a half thousand identical rows per
+yacht per fortnight — a season of the fleet would be tens of millions of rows
+saying nothing at all.
+
+So a row is written when she has **moved** (0.05 nm, the same threshold the
+board uses before it adds a point to a trail) **or** when half an hour has
+passed. A berth stays legible at two rows an hour instead of twenty, and a
+passage is recorded in full.
+
+In practice that is on the order of **8,000 rows a day** for this fleet, about
+175 MB a year — comfortably inside a Basic database with a year's retention.
+The hard ceiling is 61 rows per write cycle, so nothing can run away.
+
+Pruning happens hourly, in blocks of five thousand. One `DELETE` over a year of
+rows would hold a lock long enough to stall the writes behind it, and the
+writes are the part that matters.
+
+### Reading it
+
+```
+GET /api/history?mmsi=319012900&from=2026-06-01&to=2026-07-01
+```
+
+The window is required rather than defaulted to everything — a query with no
+dates over a season of a busy fleet is the one that gets run once by accident
+and then blamed on the database. The answer says `truncated` if it hit the cap,
+because a caller that silently received the first five thousand rows would draw
+a passage that stops in the middle of the sea.
+
+**Not built yet:** anything in the console that uses this. The table, the
+recorder and the endpoint are here; a date picker on the console's vessel sheet
+that draws a past passage is the obvious next piece, and is a job on the board
+rather than on the relay.
+
+---
+
 ## Deploying it
 
 Anything that gets the repository onto the Web App will do — zip deploy from

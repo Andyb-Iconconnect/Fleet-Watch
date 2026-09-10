@@ -72,6 +72,61 @@ function create(ctx) {
       return json(res, 200, store.snapshot(withTracks));
     }
 
+    /**
+     * One yacht, between two dates.
+     *
+     *   /api/history?mmsi=319012900&from=2026-06-01&to=2026-07-01
+     *
+     * Answered from the table rather than from memory, which is the whole point
+     * of the table: the relay holds a day, and this holds a season.
+     *
+     * The window is required rather than defaulted to everything. A query with
+     * no dates over a year of a busy fleet is the one that gets run once by
+     * accident and then blamed on the database.
+     */
+    if (route === '/api/history') {
+      if (!ctx.history || !ctx.history.enabled) {
+        return json(res, 503, { error: 'no history: this relay has no SQL configured' });
+      }
+      // Configured but not working — the database unreachable, the table not
+      // created, the login without rights. Said, rather than answered with an
+      // empty passage that reads as a yacht which has never moved.
+      if (ctx.history.ready === false) {
+        return json(res, 503, { error: 'the history table is not available: ' +
+          (ctx.history.lastError || 'it has not been created yet') });
+      }
+      var mmsi = url.searchParams.get('mmsi');
+      var from = new Date(url.searchParams.get('from'));
+      var to = new Date(url.searchParams.get('to'));
+      if (!/^[2-7]\d{8}$/.test(String(mmsi))) {
+        return json(res, 400, { error: 'mmsi must be a nine-digit MMSI' });
+      }
+      if (!isFinite(from.getTime()) || !isFinite(to.getTime()) || to <= from) {
+        return json(res, 400, { error: 'from and to must be dates, and to must be after from' });
+      }
+      if (!store.byMmsi[String(mmsi)]) {
+        // Not ours. Answered plainly rather than with an empty list, which
+        // would read as "she has never moved".
+        return json(res, 404, { error: 'that MMSI is not in this fleet' });
+      }
+      return ctx.history.read(mmsi, from, to,
+        Number(url.searchParams.get('limit')) || 0).then(function (out) {
+          json(res, 200, {
+            mmsi: String(mmsi),
+            from: from.toISOString(), to: to.toISOString(),
+            rows: out.rows.length,
+            // Said out loud: a caller that silently received the first five
+            // thousand rows would draw a passage that stops in the middle of
+            // the sea.
+            truncated: out.truncated,
+            positions: out.rows
+          });
+        }, function (err) {
+          json(res, 502, { error: 'the history query failed: ' +
+            ((err && err.message) || String(err)) });
+        });
+    }
+
     if (route === '/api/health') {
       return json(res, ctx.problems().length ? 503 : 200, health(ctx));
     }
@@ -162,6 +217,7 @@ function create(ctx) {
       lastPollAt: snap.lastPollAt,
       minutesSinceLastFix: ageMinutes == null ? null : Math.round(ageMinutes),
       feedError: store.lastError,
+      history: ctx.history ? ctx.history.stats() : 'not configured',
       snapshot: ctx.blob && ctx.blob.enabled()
         ? { savedAt: ctx.blob.lastSavedAt ? ctx.blob.lastSavedAt.toISOString() : null,
             error: ctx.blob.lastError }

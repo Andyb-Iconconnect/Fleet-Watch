@@ -7,9 +7,13 @@
   "scripts": {
     "start": "node server/index.js",
     "test": "node tools/test.js",
-    "build": "node tools/build-single-file.js"
+    "build": "node tools/build-single-file.js",
+    "check-sql": "node server/check-sql.js"
   },
   "engines": {
     "node": ">=22"
+  },
+  "optionalDependencies": {
+    "tedious": "^20.0.0"
   }
 }
