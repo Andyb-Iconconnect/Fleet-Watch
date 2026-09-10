@@ -70,13 +70,18 @@ window.CONFIG = {
    *                   sixty-one, and it says whether a position came from a
    *                   shore receiver or a satellite. No tier reaches sixty
    *                   vessels, so it is on the shelf.
+   *   'relay'         our own Web App, which reads one of the below once for
+   *                   the whole company and serves the board from the same
+   *                   origin. No key at this end, no CORS, and a metered
+   *                   provider billed once however many screens there are.
+   *                   This is what a wall board should be set to.
    *   'vesselapi'     paid, and a STREAM rather than a snapshot: reports
    *                   newest first, a page at a time, with a cursor. All
    *                   sixty-one for one request, and the first real answer
    *                   contained nothing but ours — the MMSI filter works,
    *                   which AISstream's did not.
    */
-  provider: 'aisstream',
+  provider: 'relay',
 
   /**
    * MarineTraffic, when `provider` names it.
@@ -122,6 +127,22 @@ window.CONFIG = {
    * page. If `cursorParam` is wrong the adapter notices — page two comes back
    * as page one — and stops rather than re-reading one page down the allowance.
    */
+  /**
+   * The relay, when `provider` names it.
+   *
+   * `endpoint` is a path rather than a URL on purpose: the board is served by
+   * the relay, so it asks the origin it was loaded from and there is nothing to
+   * keep in step when the Web App is renamed or moved behind a new hostname.
+   *
+   * `pollSeconds` is nearly free — this is our own server on the same origin,
+   * about eight kilobytes an answer, not a metered API. It is what decides how
+   * fresh the wall looks.
+   */
+  relay: {
+    endpoint: '/api/fleet',
+    pollSeconds: 30
+  },
+
   vesselApi: {
     endpoint: 'https://api.vesselapi.com/v1/vessels/positions',
     pollMinutes: 3,

@@ -1,9 +1,10 @@
 /* -----------------------------------------------------------------------------
  * feed.js — where positions come from, decided in one place.
  *
- * There are four: a simulator, a WebSocket that pushes (AISstream), an HTTP
- * endpoint that is polled (MarineTraffic) and a paged stream that is read
- * forward from a watermark (VesselAPI). The board and the console should not
+ * There are five: a simulator, a WebSocket that pushes (AISstream), an HTTP
+ * endpoint that is polled (MarineTraffic), a paged stream read forward from a
+ * watermark (VesselAPI), and our own relay — which is any of those read once
+ * on a server and served to every screen. The board and the console should not
  * know which is running, and until now they both did — each carried
  * its own copy of "if there is a key, start the socket, otherwise start the
  * demo", which is two places to edit and two places to get it wrong.
@@ -27,11 +28,33 @@
    * caught here rather than by a socket that never opens.
    */
   Feed.providerFor = function (key) {
-    if (!key) return 'demo';
     var named = window.CONFIG.provider;
+    /**
+     * The relay is the exception, and it is the whole point of it: there is no
+     * key at this end. It lives as an App Setting on the Web App that serves
+     * this page, so a board with no key at all is not a board with no feed —
+     * and falling back to the simulator here would put invented yachts on a
+     * wall in front of customers.
+     */
+    if (named === 'relay') return 'relay';
+    if (!key) return 'demo';
     if (named === 'marinetraffic' || named === 'aisstream' ||
         named === 'vesselapi') return named;
     return 'aisstream';
+  };
+
+  /**
+   * Simulated or real, decided in one place.
+   *
+   * Both pages set Store.mode before init, because restoring the cache depends
+   * on it — a cache of real fixes must not be loaded into a simulation, nor a
+   * simulation's into a live board. They each did it by asking whether there is
+   * a key, which was right until the relay, where a board with no key is the
+   * most live it has ever been. Asked wrongly it does not fail; it silently
+   * throws away the cache and puts invented yachts on a wall.
+   */
+  Feed.mode = function () {
+    return Feed.providerFor(window.Settings.aisKey()) === 'demo' ? 'demo' : 'live';
   };
 
   Feed.start = function () {
@@ -53,14 +76,16 @@
      * Caught by switching a running console from demo to MarineTraffic and
      * counting one vessel more than the answer contained.
      */
-    var mode = provider === 'demo' ? 'demo' : 'live';
+    var mode = Feed.mode();
     if (window.Store.mode !== mode) {
       window.Store.mode = mode;
       window.Store.init(window.FLEET);
     }
     window.Store.mode = mode;
 
-    if (provider === 'marinetraffic') {
+    if (provider === 'relay') {
+      window.Relay.start();
+    } else if (provider === 'marinetraffic') {
       window.MarineTraffic.start(key, mmsis());
     } else if (provider === 'vesselapi') {
       window.VesselApi.start(key, mmsis());
@@ -86,6 +111,7 @@
     window.Demo.stop();
     if (window.MarineTraffic) window.MarineTraffic.stop();
     if (window.VesselApi) window.VesselApi.stop();
+    if (window.Relay) window.Relay.stop();
   };
 
   /**

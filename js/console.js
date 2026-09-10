@@ -74,7 +74,7 @@
     BASE_FLEET = window.FLEET.slice();
     window.FLEET = window.Vessel.mergedFleet(BASE_FLEET);
     // Before init: the cache restore inside it depends on which mode we are in.
-    window.Store.mode = window.Settings.aisKey() ? 'live' : 'demo';
+    window.Store.mode = window.Feed.mode();
     window.Store.init(window.FLEET);
     window.FleetMap.init(el('chart-canvas'));
     renderBrand();

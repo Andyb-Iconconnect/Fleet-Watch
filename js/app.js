@@ -69,7 +69,7 @@
     // Decided before init, because restoring the cache depends on it: a cache of
     // real fixes must not be loaded into a simulation, nor a simulation's into a
     // live board, and init is where the restore happens.
-    window.Store.mode = window.Settings.aisKey() ? 'live' : 'demo';
+    window.Store.mode = window.Feed.mode();
     window.Store.init(window.FLEET);
     window.FleetMap.init(el('chart-canvas'));
 

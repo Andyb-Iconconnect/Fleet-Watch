@@ -82,6 +82,26 @@ config = config.replace(/buildStamp: ''/, "buildStamp: '" + stamp + "'");
 // emailed, dropped on a USB stick and published as a page, and a credential
 // baked into it goes wherever the file goes. The board asks for a key at the
 // screen instead (js/settings.js) and keeps it in that browser's localStorage.
+/**
+ * A single file has no relay behind it.
+ *
+ * The board is normally served by the Web App that reads the feed, and asks it
+ * for positions on the same origin — which is the whole reason there is no key
+ * in a browser any more. A bundle is the opposite case: one file on a stick, a
+ * machine with no server, nothing to ask. Left as 'relay' it would poll a path
+ * that does not exist and show an empty sea for ever, which looks exactly like
+ * a quiet Tuesday.
+ *
+ * So a bundle goes back to talking to the provider directly, with a key typed
+ * at the screen.
+ */
+if (/provider: 'relay'/.test(config)) {
+  config = config.replace(/provider: 'relay'/, "provider: 'aisstream'");
+  console.warn('  ! this bundle has no relay behind it, so it talks to ' +
+               'AISstream directly.\n' +
+               '    Enter a key at the screen — click the status pill, or press K.');
+}
+
 const hadKey = /aisStreamApiKey: '.+'/.test(config);
 config = config.replace(/aisStreamApiKey: '[^']*'/, "aisStreamApiKey: ''");
 if (hadKey) {

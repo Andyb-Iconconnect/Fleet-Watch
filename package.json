@@ -1,0 +1,15 @@
+{
+  "name": "fleet-watch",
+  "version": "1.0.0",
+  "description": "Fleet Watch — a live yacht board, and the relay that feeds it",
+  "private": true,
+  "main": "server/index.js",
+  "scripts": {
+    "start": "node server/index.js",
+    "test": "node tools/test.js",
+    "build": "node tools/build-single-file.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

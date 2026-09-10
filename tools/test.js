@@ -44,10 +44,11 @@ const readRepo = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
 ['config.js', 'fleet.js', 'data/mid.js', 'data/ports.js', 'data/world-land.js',
  'js/geo.js', 'js/format.js', 'js/store.js', 'js/ais.js', 'js/vessel.js',
  'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js',
- 'js/marinetraffic.js', 'js/vesselapi.js'].forEach(load);
+ 'js/marinetraffic.js', 'js/vesselapi.js', 'js/relay.js',
+ 'js/feed.js'].forEach(load);
 
 const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster,
-        MarineTraffic, VesselApi } = window;
+        MarineTraffic, VesselApi, Relay } = window;
 const FleetMap = window.FleetMap;
 
 // The behavioural tests run against a fixed sample fleet, NOT against fleet.js.
@@ -1724,10 +1725,17 @@ test('the board loads the modules it now depends on, before it uses them', () =>
 test('neither app reads the AIS key straight out of config', () => {
   // The single-file build strips the key out of config.js on purpose, so a key
   // read from there alone can never reach a published board.
-  ['js/app.js', 'js/console.js'].forEach((f) => {
+  ['js/app.js', 'js/console.js', 'js/feed.js'].forEach((f) => {
     assert.ok(!/CONFIG\.aisStreamApiKey/.test(readRepo(f)),
       f + ' goes through Settings, so a key typed into the app is honoured');
-    assert.ok(/Settings\.aisKey\(\)/.test(readRepo(f)), f + ' asks Settings for the key');
+  });
+  // And exactly one file asks for it. The two pages used to ask separately and
+  // reach different answers about whether the board was live.
+  assert.ok(/Settings\.aisKey\(\)/.test(readRepo('js/feed.js')),
+    'feed.js asks Settings for the key');
+  ['js/app.js', 'js/console.js'].forEach((f) => {
+    assert.ok(!/Settings\.aisKey\(\)/.test(readRepo(f)),
+      f + ' does not decide anything about the key itself');
   });
 });
 
@@ -2737,11 +2745,32 @@ test('the feed mode is settled before the cache is read', () => {
   // discard every real cache on every load.
   ['js/app.js', 'js/console.js'].forEach((f) => {
     const source = readRepo(f);
-    const setMode = source.indexOf("Store.mode = window.Settings.aisKey() ? 'live' : 'demo'");
+    const setMode = source.indexOf('Store.mode = window.Feed.mode()');
     const init = source.indexOf('Store.init(window.FLEET)');
     assert.ok(setMode !== -1, f + ' decides the mode explicitly');
     assert.ok(setMode < init, f + ': and does it before init reads the cache');
   });
+
+  /**
+   * And the answer comes from the provider, not from whether a key was typed.
+   *
+   * On the relay there IS no key at this end — that is the point of it — so
+   * "no key means demo" would silently discard the cache of a board that is
+   * more live than it has ever been, and put invented yachts on a wall in
+   * front of customers.
+   */
+  const original = CONFIG.provider;
+  const settings = window.Settings;
+  window.Settings = { aisKey: () => '' };
+  try {
+    CONFIG.provider = 'relay';
+    assert.strictEqual(window.Feed.mode(), 'live', 'a relay board with no key is live');
+    CONFIG.provider = 'aisstream';
+    assert.strictEqual(window.Feed.mode(), 'demo', 'and without one it still is not');
+  } finally {
+    CONFIG.provider = original;
+    window.Settings = settings;
+  }
 });
 
 test('a running test does not leave the feed reporting on itself', () => {
@@ -5061,6 +5090,289 @@ test('paging stops when the cursor is ignored, and inside its budget', () => {
   const budgeted = run('walk', { backfillPages: 5 });
   assert.strictEqual(budgeted.calls, 5, 'a poll never exceeds its budget');
   assert.strictEqual(budgeted.error, null, 'and that is not an error');
+});
+
+/* -----------------------------------------------------------------------------
+ * The relay — one reader for the whole company.
+ *
+ * These run the server's own modules directly. The HTTP ones start it in a
+ * second node and ask it real questions, because the things worth checking
+ * about a static server — that it will not serve /etc/passwd, that it will not
+ * serve its own configuration — are properties of what it answers, not of what
+ * it intends.
+ * ------------------------------------------------------------------------- */
+
+const relayConfig = require(path.join(__dirname, '..', 'server', 'config.js'));
+const relayStore = require(path.join(__dirname, '..', 'server', 'store.js'));
+
+test('a relay with no settings says what is missing, and still starts', () => {
+  /**
+   * An app that refuses to boot on a missing setting tells you only that it is
+   * down. This one serves the board, reports the fault on /api/health, and is
+   * therefore diagnosable from a phone at eight in the morning.
+   */
+  const problems = relayConfig.problems(relayConfig.read({}));
+  assert.ok(problems.some((p) => /FEED_PROVIDER/.test(p)));
+  assert.ok(problems.some((p) => /FEED_KEY/.test(p)));
+  assert.ok(problems.every((p) => /\.$/.test(p.trim())),
+    'each is a sentence someone can act on');
+
+  const named = relayConfig.problems(relayConfig.read(
+    { FEED_PROVIDER: 'marinetraffic', FEED_KEY: 'k' }));
+  assert.ok(named.some((p) => /not a provider/.test(p)),
+    'a provider this relay does not have is named, not ignored');
+
+  assert.strictEqual(
+    relayConfig.problems(relayConfig.read(
+      { FEED_PROVIDER: 'vesselapi', FEED_KEY: 'k' })).length, 0);
+});
+
+test('the relay reads PORT from Azure and nothing else', () => {
+  // App Service picks the port and tells the app through PORT. A hard-coded one
+  // means a container that starts, logs nothing wrong, and is never reachable.
+  assert.strictEqual(relayConfig.read({ PORT: '1234' }).port, 1234);
+  assert.strictEqual(relayConfig.read({}).port, 8080);
+});
+
+test('the relay store refuses what the board would draw wrongly', () => {
+  const fleet = [{ mmsi: 235070865, name: 'A' }, { mmsi: 319012900, name: 'B' }];
+  const s = relayStore.create(fleet, {});
+  const at = new Date('2026-09-08T22:00:00Z');
+
+  assert.strictEqual(s.applyFix('235070865', { lat: 43, lon: 7, at: at }), true);
+  assert.strictEqual(s.applyFix('999999999', { lat: 43, lon: 7, at: at }), false,
+    'a vessel that is not ours');
+  assert.strictEqual(s.applyFix('319012900', { lat: 91, lon: 7, at: at }), false,
+    'an impossible latitude');
+  assert.strictEqual(s.applyFix('319012900', { lat: 43, lon: 7, at: 'not a date' }),
+    false, 'a timestamp that is not one');
+
+  // A page of stream history arrives in whatever order it likes, and a yacht
+  // must never walk backwards on a wall board.
+  const earlier = new Date('2026-09-08T21:00:00Z');
+  assert.strictEqual(s.applyFix('235070865', { lat: 44, lon: 8, at: earlier }), false);
+  assert.strictEqual(s.byMmsi['235070865'].fix.lat, 43);
+});
+
+test('a yacht alongside does not fill the snapshot with the same berth', () => {
+  /**
+   * She broadcasts every three minutes for a fortnight. Recorded
+   * unconditionally that is a quarter of a million identical points, all of
+   * them at the same pontoon, in every snapshot written and every board served.
+   */
+  const s = relayStore.create([{ mmsi: 235070865, name: 'A' }], {});
+  for (let i = 0; i < 50; i++) {
+    s.applyFix('235070865', {
+      lat: 43.5, lon: 7.1, at: new Date(Date.UTC(2026, 8, 8, 20, i))
+    });
+  }
+  assert.strictEqual(s.byMmsi['235070865'].track.length, 1);
+
+  s.applyFix('235070865', { lat: 43.9, lon: 7.6, at: new Date(Date.UTC(2026, 8, 8, 21)) });
+  assert.strictEqual(s.byMmsi['235070865'].track.length, 2, 'but a passage is kept');
+});
+
+test('the track is capped, so a relay left running does not grow for ever', () => {
+  const s = relayStore.create([{ mmsi: 235070865, name: 'A' }], { trackPoints: 10 });
+  for (let i = 0; i < 40; i++) {
+    s.applyFix('235070865', {
+      lat: 43 + i * 0.01, lon: 7 + i * 0.01, at: new Date(Date.UTC(2026, 8, 8, 20, i))
+    });
+  }
+  assert.strictEqual(s.byMmsi['235070865'].track.length, 10);
+  assert.ok(Math.abs(s.byMmsi['235070865'].track[9][0] - 7.39) < 0.001,
+    'and it is the newest ten that are kept');
+});
+
+test('tracks are asked for, not sent', () => {
+  /**
+   * They are two orders of magnitude larger than the positions and a board only
+   * needs them when it opens. A screen polling every thirty seconds would
+   * otherwise pull a third of a megabyte each time to redraw lines it already
+   * has — on every screen, for ever.
+   */
+  const s = relayStore.create([{ mmsi: 235070865, name: 'A' }], {});
+  for (let i = 0; i < 20; i++) {
+    s.applyFix('235070865', {
+      lat: 43 + i * 0.02, lon: 7 + i * 0.02, at: new Date(Date.UTC(2026, 8, 8, 20, i))
+    });
+  }
+  assert.strictEqual(s.snapshot(false).vessels[0].track, undefined);
+  assert.strictEqual(s.snapshot(true).vessels[0].track.length, 20);
+  // Twenty points already treble the answer for one yacht. Across sixty-one,
+  // with the full run kept, it is the difference between eight kilobytes a poll
+  // and a third of a megabyte — every thirty seconds, on every screen.
+  assert.ok(JSON.stringify(s.snapshot(true)).length >
+            JSON.stringify(s.snapshot(false)).length * 3,
+    'which is why it is not sent every thirty seconds');
+});
+
+test('the snapshot carries positions and nothing about how they were got', () => {
+  // It goes to every screen, and one of them will eventually be somewhere it
+  // should not be.
+  const s = relayStore.create([{ mmsi: 235070865, name: 'A' }], {});
+  s.applyFix('235070865', { lat: 43, lon: 7, at: new Date() });
+  const text = JSON.stringify(s.snapshot(true));
+  ['key', 'Bearer', 'Authorization', 'endpoint', 'vesselapi.com', 'aisstream']
+    .forEach((word) => {
+      assert.ok(text.toLowerCase().indexOf(word.toLowerCase()) === -1,
+        'the snapshot must not mention ' + word);
+    });
+});
+
+test('a restart costs one request, not a backfill', () => {
+  /**
+   * Azure restarts this app whenever it likes. Restoring the fleet is what
+   * stops the board blanking — but the watermark coming back with it is what
+   * stops the reader paging from nothing on a metered plan. Measured on a real
+   * restart against a stand-in: twelve requests became one.
+   */
+  const fleet = [{ mmsi: 235070865, name: 'A' }, { mmsi: 319012900, name: 'B' }];
+  const before = relayStore.create(fleet, {});
+  const newest = new Date('2026-09-08T22:30:00Z');
+  before.applyFix('235070865', { lat: 43, lon: 7, at: new Date('2026-09-08T22:00:00Z') });
+  before.applyFix('319012900', { lat: 44, lon: 8, at: newest, sog: 12 });
+  before.applyIdentity('319012900', { name: 'B', imo: 9249403 });
+
+  const after = relayStore.create(fleet, {});
+  assert.strictEqual(after.watermark(), null, 'a cold store has nowhere to resume from');
+  assert.strictEqual(after.restore(JSON.parse(JSON.stringify(before.snapshot(true)))), 2);
+  assert.strictEqual(after.watermark().getTime(), newest.getTime(),
+    'and a restored one resumes where it got to');
+  assert.strictEqual(after.byMmsi['319012900'].fix.sog, 12);
+  assert.strictEqual(after.byMmsi['319012900'].ais.imo, 9249403);
+});
+
+test('the relay serves the board but not itself', () => {
+  /**
+   * A static server hands over whatever the URL asks for unless it is told not
+   * to, and this repository is not a web root: it also holds the relay's own
+   * source, the test suite, a build directory and — depending on how it is
+   * deployed — a .git directory, which is a copy of everything that has ever
+   * been in here.
+   *
+   * So it serves an allowlist, not a blocklist. Found by asking the running
+   * server for /package.json and being handed it.
+   *
+   * The climb out of the root is asked over a raw socket, because fetch tidies
+   * "/../x" into "/x" before it sends it and the check would pass without ever
+   * testing anything. And the check in the server resolves the path before
+   * comparing it, rather than stripping "../" from the string — the string
+   * version is the one defeated by "....//".
+   */
+  const { execFileSync } = require('child_process');
+  const out = path.join(require('os').tmpdir(), 'fw-relay-probe.json');
+  const script = `
+    const ctx = require('${path.join(__dirname, '..', 'server', 'index.js')}')
+      .start({ PORT: '0' });
+    const server = require('http').createServer(
+      require('${path.join(__dirname, '..', 'server', 'app.js')}').create(ctx).handle);
+    server.listen(0, async () => {
+      const port = server.address().port;
+      const ask = async (p) => {
+        const r = await fetch('http://127.0.0.1:' + port + p, { redirect: 'manual' });
+        return { status: r.status, cache: r.headers.get('cache-control') };
+      };
+      // Untouched by any client's tidying up.
+      const raw = (line) => new Promise((resolve) => {
+        const s = require('net').connect(port, '127.0.0.1', () => {
+          s.write(line + ' HTTP/1.1\\r\\nHost: relay\\r\\nConnection: close\\r\\n\\r\\n');
+        });
+        let buf = '';
+        s.on('data', (d) => { buf += d; });
+        s.on('end', () => resolve(Number((buf.split(' ')[1] || '0'))));
+      });
+      const result = {
+        board: await ask('/'),
+        script: await ask('/js/map.js'),
+        fleet: await ask('/api/fleet'),
+        nonsense: await ask('/api/nothing'),
+        source: await ask('/server/config.js'),
+        manifest: await ask('/package.json'),
+        suite: await ask('/tools/test.js'),
+        climb: await raw('GET /../package.json'),
+        deepClimb: await raw('GET /js/../../../etc/passwd'),
+        dotdot: await raw('GET /....//....//etc/passwd')
+      };
+      require('fs').writeFileSync('${out.replace(/\\/g, '\\\\')}',
+        JSON.stringify(result));
+      process.exit(0);
+    });
+  `;
+  execFileSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+  const r = JSON.parse(fs.readFileSync(out, 'utf8'));
+  fs.unlinkSync(out);
+
+  assert.strictEqual(r.board.status, 200, 'the board is served');
+  assert.strictEqual(r.script.status, 200, 'and its scripts');
+  assert.strictEqual(r.fleet.status, 200);
+  assert.strictEqual(r.nonsense.status, 404, 'an unknown endpoint is not the board');
+
+  assert.strictEqual(r.source.status, 404, 'the relay does not serve its own source');
+  assert.strictEqual(r.manifest.status, 404, 'nor anything else in the repository');
+  assert.strictEqual(r.suite.status, 404, 'nor the test suite');
+  assert.strictEqual(r.climb, 404, 'nor anything above the root');
+  assert.strictEqual(r.deepClimb, 404, 'however deep the climb starts');
+  assert.strictEqual(r.dotdot, 404, 'nor the form that defeats stripping "../"');
+
+  // A screensaver runs for weeks. Without this a proxy can serve the same fleet
+  // all afternoon and nothing on the wall would say so.
+  assert.strictEqual(r.fleet.cache, 'no-store');
+  assert.strictEqual(r.board.cache, 'no-cache',
+    'and a wall must not still be running an old build after a deployment');
+});
+
+test('the board takes tracks from the relay once, and only when they arrive', () => {
+  /**
+   * Asked for on the first poll and not again — but only marked as done if that
+   * poll actually worked. A board that opened during a deployment would
+   * otherwise draw no track at all until somebody reloaded it.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    Relay.wantTracks = true;
+    const mmsi = String(FLEET[0].mmsi);
+    // Inside the board's own trackHours window, because it trims anything older
+    // than that on every recompute — correctly. A relay that has been running
+    // for a week still only hands over a day's worth of usable trail.
+    const ago = (h) => new Date(Date.now() - h * 3600000).toISOString();
+    Relay._receive({
+      vessels: [{
+        mmsi: mmsi, lat: 43.5, lon: 7.1, sog: 8, cog: 200, at: ago(0.5),
+        track: [[7.0, 43.4, ago(3)], [7.05, 43.45, ago(2)]]
+      }]
+    });
+
+    const v = s.byMmsi[mmsi];
+    assert.strictEqual(v.track.length, 3, 'the handed track, then the fix on the end');
+    assert.strictEqual(v.track[0].lon, 7.0);
+    assert.ok(v.track[0].at instanceof Date, 'and its times are times, not strings');
+    assert.strictEqual(v.fix.sog, 8);
+    assert.strictEqual(s.connection, 'open');
+    assert.strictEqual(Relay.wantTracks, false, 'not asked for again');
+  } finally { window.Store = original; }
+});
+
+test('a relay that answers with something else is not read as an empty sea', () => {
+  /**
+   * The relay being unreachable, or answering nonsense, is the one failure this
+   * board could not have before. It must never look like a calm afternoon:
+   * every yacht on screen goes on ageing from the time her fix was taken, and
+   * the pill says the connection is retrying.
+   */
+  const s = freshStore();
+  const original = window.Store;
+  window.Store = s;
+  try {
+    Relay.wantTracks = true;
+    Relay._receive({ error: 'nope' });
+    assert.strictEqual(s.connection, 'retrying');
+    assert.ok(/not a fleet/.test(Relay.lastError));
+    assert.strictEqual(Relay.wantTracks, true,
+      'and the next poll still asks for the tracks it never got');
+  } finally { window.Store = original; }
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
