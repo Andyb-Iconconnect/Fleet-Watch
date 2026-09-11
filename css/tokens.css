@@ -100,6 +100,13 @@
   --map-depth-1000: #112640;   /* beyond 1000 m */
   --map-border:      rgba(147, 190, 220, 0.22);
   --map-course:      rgba(60, 180, 228, 0.45);   /* the leg still to run */
+  /* A passage read back out of the record, which is neither a status nor a
+     plan. Near-white rather than a hue: every status colour is already a hue,
+     the twilight shading is violet over half the chart at night, and a line
+     that has to be told apart from all of them by tint is a line nobody can
+     read at a glance. */
+  --map-passage:      rgba(234, 242, 248, 0.50);
+  --map-passage-mark: #EAF2F8;
   --map-wind:        rgba(147, 190, 220, 0.60);
   /* Place names. Water reads light on the sea; land reads dark on the land,
      because the land fill is the lightest thing on the chart. */

@@ -141,7 +141,9 @@
       siteYard: v('--map-site-yard', '#6FCBEA'),
       sentinel: v('--sentinel', '#D4A64A'),
       clusterFill: v('--map-cluster', 'rgba(16, 32, 48, 0.92)'),
-      clusterRing: v('--map-cluster-ring', 'rgba(139, 152, 168, 0.85)')
+      clusterRing: v('--map-cluster-ring', 'rgba(139, 152, 168, 0.85)'),
+      passage: v('--map-passage', 'rgba(234, 242, 248, 0.50)'),
+      passageMark: v('--map-passage-mark', '#EAF2F8')
     };
   }
   Map.readTheme = function () { readTheme(); baseKey = ''; };
@@ -365,6 +367,7 @@
       claimed = claimed.concat(m2('places', function () { return drawPlaces(claimed, opts); }));
       m2('ports', function () { drawPorts(claimed); });
       m2('courses', function () { drawCourses(vessels); });
+      m2('passage', function () { drawPassage(); });
       m2('tracks', function () { drawTracks(vessels); });
       m2('clusters', function () { paintClusters(groups.clusters, now); });
       m2('markers', function () { paintMarkers(groups.singles, opts, now); });
@@ -384,6 +387,7 @@
       claimed = claimed.concat(drawPlaces(claimed, opts));
       drawPorts(claimed);
       drawCourses(vessels);
+      drawPassage();
       drawTracks(vessels);
       paintClusters(groups.clusters, now);
       paintMarkers(groups.singles, opts, now);
@@ -1348,6 +1352,72 @@
     ctx.fillText(nm >= 1000 ? (nm / 1000) + ',000 nm' : nm + ' nm', x + barPx + 8, y + 4);
     ctx.restore();
   }
+
+  /**
+   * A passage read back out of the record.
+   *
+   * Not a track and not a course: the trail is the last day of movement the
+   * board has watched happen, the course is where she says she is going, and
+   * this is where she actually went — in June, or last season, from a table
+   * rather than from the feed.
+   *
+   * Drawn UNDER the live marks on purpose. It is what you asked for, but she is
+   * somewhere now, and a month of passage painted over the present would hide
+   * the one thing the board is for.
+   */
+  function drawPassage() {
+    var pts = Map.passage;
+    if (!pts || pts.length < 2) return;
+
+    ctx.save();
+    ctx.strokeStyle = theme.passage;
+    ctx.lineWidth = 2.5;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.beginPath();
+    var pen = false;
+    var lastX = 0;
+    for (var i = 0; i < pts.length; i++) {
+      var x = sx(window.Geo.worldX(pts[i].lon));
+      var y = sy(window.Geo.worldY(pts[i].lat));
+      // The antimeridian, and only the antimeridian. A jump of more than half
+      // the chart between consecutive fixes is the seam, not a passage — drawn
+      // through it, an Atlantic crossing gets a line back across Asia.
+      if (pen && Math.abs(x - lastX) > width * 0.6) pen = false;
+      if (pen) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+      pen = true;
+      lastX = x;
+    }
+    ctx.stroke();
+
+    // Where it started and where it ended, because a line with no ends is a
+    // shape rather than a journey.
+    endMark(pts[0], false);
+    endMark(pts[pts.length - 1], true);
+    ctx.restore();
+  }
+
+  function endMark(p, filled) {
+    var x = sx(window.Geo.worldX(p.lon));
+    var y = sy(window.Geo.worldY(p.lat));
+    ctx.beginPath();
+    ctx.arc(x, y, 3.5, 0, Math.PI * 2);
+    ctx.strokeStyle = theme.passageMark;
+    ctx.lineWidth = 1.5;
+    if (filled) { ctx.fillStyle = theme.passageMark; ctx.fill(); }
+    ctx.stroke();
+  }
+
+  /**
+   * The passage to draw, or null for none.
+   *
+   * Points are { lon, lat, at }. Held on the map rather than in the store: it
+   * is a view of the record, not part of the fleet's state, and it must not
+   * survive into a screenshot of the board or a cache of live fixes.
+   */
+  Map.setPassage = function (points) {
+    Map.passage = points && points.length ? points : null;
+  };
 
   function drawTracks(vessels) {
     vessels.forEach(function (v) {

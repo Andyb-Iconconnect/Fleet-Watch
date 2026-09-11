@@ -1214,3 +1214,59 @@ body.dropping::after {
   transition: opacity 400ms ease;
 }
 .chart-holder.browsing .chart-hint { opacity: 0; }
+
+/* --- Where she has been ---------------------------------------------------
+ *
+ * A record read back, sitting inside the same panel furniture as everything
+ * else in the sheet: this is one more thing known about her, not a feature.
+ */
+.passage-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.6rem;
+}
+.passage-range {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 0.5rem;
+}
+.passage-date {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.72rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.passage-date input {
+  /* The native picker paints its own light chrome unless it is told the page
+     is dark, and a white calendar dropping out of this sheet is a jolt. */
+  color-scheme: dark;
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.85rem;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.passage-date input:focus {
+  outline: none;
+  border-color: var(--brand-cyan);
+}
+.passage-status {
+  margin-top: 0.7rem;
+  font-size: 0.85rem;
+  color: var(--text-primary);
+}
+.passage-status .p-note {
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-muted);
+}

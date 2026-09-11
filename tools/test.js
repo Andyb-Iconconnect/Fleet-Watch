@@ -45,10 +45,10 @@ const readRepo = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
  'js/geo.js', 'js/format.js', 'js/store.js', 'js/ais.js', 'js/vessel.js',
  'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js',
  'js/marinetraffic.js', 'js/vesselapi.js', 'js/relay.js',
- 'js/feed.js'].forEach(load);
+ 'js/feed.js', 'js/passage.js'].forEach(load);
 
 const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster,
-        MarineTraffic, VesselApi, Relay } = window;
+        MarineTraffic, VesselApi, Relay, Passage } = window;
 const FleetMap = window.FleetMap;
 
 // The behavioural tests run against a fixed sample fleet, NOT against fleet.js.
@@ -5742,6 +5742,260 @@ test('a whole number goes to SQL as an integer', () => {
   assert.strictEqual(sqlFile.typeFor(stub, '319012900'), 'NVARCHAR');
   assert.strictEqual(sqlFile.typeFor(stub, null), 'NVARCHAR',
     'a null still needs a type declared');
+});
+
+/* -----------------------------------------------------------------------------
+ * A passage read back out of the record.
+ *
+ * The board holds the present. This is where she actually went — from the
+ * relay's history table, drawn under the live marks, and never for a vessel
+ * whose movement pattern is being withheld.
+ * ------------------------------------------------------------------------- */
+
+test('the presets are windows people actually ask for', () => {
+  const now = new Date('2026-09-11T12:00:00Z');
+  const thirty = Passage.rangeFor('30d', now);
+  assert.strictEqual(thirty.to.getTime(), now.getTime());
+  assert.strictEqual((thirty.to - thirty.from) / 86400000, 30);
+
+  /**
+   * A superyacht year is two seasons, and "this season" is the one running now
+   * rather than a fixed set of months. In September that is the summer that
+   * started in May; in January it is the winter that started in November, of
+   * the year before — which is the case that gets the year wrong if it is not
+   * thought about.
+   */
+  assert.strictEqual(Passage.rangeFor('season', new Date('2026-09-11T12:00:00Z'))
+    .from.toISOString(), '2026-05-01T00:00:00.000Z');
+  assert.strictEqual(Passage.rangeFor('season', new Date('2026-12-20T12:00:00Z'))
+    .from.toISOString(), '2026-11-01T00:00:00.000Z');
+  assert.strictEqual(Passage.rangeFor('season', new Date('2027-01-20T12:00:00Z'))
+    .from.toISOString(), '2026-11-01T00:00:00.000Z');
+  assert.strictEqual(Passage.rangeFor('season', new Date('2027-03-20T12:00:00Z'))
+    .from.toISOString(), '2026-11-01T00:00:00.000Z');
+
+  assert.strictEqual(Passage.rangeFor('nonsense', now), null);
+});
+
+test('rows that are not positions are dropped, not drawn', () => {
+  // A row with no position is not a gap in a passage; it is not a position at
+  // all, and drawn as (0, 0) it puts her in the Gulf of Guinea.
+  const points = Passage.points([
+    { reported_at: '2026-08-02T00:00:00Z', lat: 43.5, lon: 7.1 },
+    { reported_at: '2026-08-01T00:00:00Z', lat: '43.4', lon: '7.0' },
+    { reported_at: '2026-08-03T00:00:00Z', lat: null, lon: 7.2 },
+    { reported_at: 'not a date', lat: 43.6, lon: 7.3 },
+    { reported_at: '2026-08-04T00:00:00Z', lat: 91, lon: 7.4 }
+  ]);
+  assert.strictEqual(points.length, 2);
+  // Oldest first, whatever order they arrived in: the line is drawn in the
+  // order she sailed it.
+  assert.strictEqual(points[0].at.toISOString(), '2026-08-01T00:00:00.000Z');
+  assert.strictEqual(points[0].lat, 43.4, 'a decimal that arrived as a string');
+});
+
+test('the distance is what she ran, not where she ended up', () => {
+  /**
+   * A season spent going out and coming back measures nought miles end to end.
+   * The figure people want is how far she actually went, so it is the sum of
+   * the legs.
+   */
+  const there = [7.0, 43.5], away = [9.0, 42.0];
+  const points = Passage.points([
+    { reported_at: '2026-08-01T00:00:00Z', lat: there[1], lon: there[0] },
+    { reported_at: '2026-08-02T00:00:00Z', lat: away[1], lon: away[0], sog: 18.4 },
+    { reported_at: '2026-08-06T00:00:00Z', lat: there[1], lon: there[0], sog: 9.1 }
+  ]);
+  const s = Passage.summarise(points);
+  const oneWay = Geo.distanceNm(there[0], there[1], away[0], away[1]);
+
+  assert.strictEqual(s.positions, 3);
+  close(s.distanceNm, oneWay * 2, 0.01, 'there and back is twice the leg');
+  assert.ok(s.distanceNm > 100, 'and it is a real distance: ' + s.distanceNm);
+
+  /**
+   * The gap is the honest part. The record has only what was heard, and a
+   * yacht mid-Atlantic on a terrestrial feed is not heard for a week — a line
+   * drawn straight across that is a guess, and it is the part of the picture
+   * that looks most like data.
+   */
+  close(s.longestGapHours, 96, 0.01, 'four days nobody heard her');
+  assert.strictEqual(s.topSpeed, 18.4);
+
+  const empty = Passage.summarise([]);
+  assert.strictEqual(empty.positions, 0);
+  assert.strictEqual(empty.distanceNm, 0);
+  assert.strictEqual(empty.from, null, 'and no dates invented for a window with nothing in it');
+});
+
+test('the record is asked for by MMSI and an exact window', () => {
+  const url = new URL(Passage.url(319012900,
+    new Date('2026-06-01T00:00:00Z'), new Date('2026-07-01T00:00:00Z')),
+    'http://relay');
+  assert.strictEqual(url.pathname, '/api/history');
+  assert.strictEqual(url.searchParams.get('mmsi'), '319012900');
+  assert.strictEqual(url.searchParams.get('from'), '2026-06-01T00:00:00.000Z');
+  assert.strictEqual(url.searchParams.get('to'), '2026-07-01T00:00:00.000Z');
+});
+
+testAsync('a board with no record behind it does not offer one', async () => {
+  /**
+   * Three ways there is nothing to ask: the board is a single file on a stick
+   * with no server at all, the relay is not keeping a record, or the table is
+   * there but not working. All three are ordinary states rather than faults, so
+   * the panel is absent rather than present and broken — but each one is
+   * reported differently, because "there is no history here" and "the database
+   * is down" need different people to do different things.
+   */
+  const realFetch = window.fetch;
+  const realProvider = CONFIG.provider;
+  const answer = (health) => {
+    window.fetch = () => Promise.resolve({ ok: true, json: () => Promise.resolve(health) });
+  };
+  try {
+    CONFIG.provider = 'aisstream';
+    assert.strictEqual((await Passage.probe()).ok, false, 'not behind the relay');
+
+    CONFIG.provider = 'relay';
+    answer({ history: 'not configured' });
+    let out = await Passage.probe();
+    assert.strictEqual(out.ok, false);
+    assert.ok(/not keeping a record/.test(out.reason), out.reason);
+
+    answer({ history: { ready: false, error: 'Could not connect' } });
+    out = await Passage.probe();
+    assert.strictEqual(out.ok, false);
+    assert.ok(/Could not connect/.test(out.reason), 'the reason is passed through: ' + out.reason);
+
+    answer({ history: { ready: true } });
+    assert.strictEqual((await Passage.probe()).ok, true);
+
+    window.fetch = () => Promise.reject(new Error('Failed to fetch'));
+    out = await Passage.probe();
+    assert.strictEqual(out.ok, false);
+    assert.ok(/did not answer/.test(out.reason), out.reason);
+
+    /**
+     * And a page served by something that is not the relay at all.
+     *
+     * It answers 404 with an empty body, and reading that as JSON throws
+     * "Unexpected end of JSON input" — true, and of no use to anyone. Seen
+     * when the console was opened from a plain file server.
+     */
+    window.fetch = () => Promise.resolve({ ok: false, status: 404,
+      json: () => Promise.reject(new Error('Unexpected end of JSON input')) });
+    out = await Passage.probe();
+    assert.strictEqual(out.ok, false);
+    assert.ok(/no relay at this address/.test(out.reason), out.reason);
+  } finally {
+    window.fetch = realFetch;
+    CONFIG.provider = realProvider;
+    Passage.availability = null;
+  }
+});
+
+test('a passage is drawn, and not back across the world to do it', () => {
+  /**
+   * A yacht crossing the Pacific has fixes either side of the antimeridian, and
+   * a line drawn straight between them goes the wrong way round the planet —
+   * across Asia — which is the single most obvious way a chart can be wrong.
+   *
+   * Counted through a recording context rather than looked at: the pen lifts
+   * once at the start and once at the seam, so two moveTo calls for one
+   * crossing and one for none.
+   */
+  const moves = [];
+  const recording = new Proxy({}, {
+    get(_, key) {
+      if (key === 'moveTo') return (x, y) => moves.push([x, y]);
+      if (key === 'measureText') return () => ({ width: 40 });
+      if (key === 'createRadialGradient' || key === 'createLinearGradient') {
+        return () => ({ addColorStop: () => {} });
+      }
+      if (key === 'canvas') return { width: 1200, height: 800 };
+      if (key === 'getImageData') return () => ({ data: new Uint8ClampedArray(4) });
+      return typeof key === 'string' ? () => {} : undefined;
+    },
+    set() { return true; }
+  });
+
+  global.getComputedStyle = () => ({ getPropertyValue: () => '' });
+  // render() builds the basemap on an offscreen canvas of its own.
+  global.document = {
+    createElement: () => ({ width: 0, height: 0, getContext: () => recording })
+  };
+  FleetMap.init({
+    width: 1200, height: 800, style: {},
+    getContext: () => recording,
+    getBoundingClientRect: () => ({ width: 1200, height: 800, left: 0, top: 0 })
+  });
+  FleetMap.centreOn(180, 20, 1200);
+  FleetMap.snap();
+
+  const at = (n) => new Date(Date.UTC(2026, 7, n));
+
+  /**
+   * Measured as a difference, not a total.
+   *
+   * The coastline and the graticule lift the pen more than a thousand times a
+   * frame, so counting moveTo calls outright measures the basemap. The first
+   * render is thrown away because it also builds the cached basemap.
+   */
+  FleetMap.setPassage(null);
+  FleetMap.render(1, [], { labels: false });
+  moves.length = 0;
+  FleetMap.render(1, [], { labels: false });
+  const baseline = moves.length;
+
+  const run = (pts) => {
+    moves.length = 0;
+    FleetMap.setPassage(pts);
+    FleetMap.render(1, [], { labels: false });
+    // The end marks are arcs, not moveTo, so every one of these is the pen
+    // being lifted for a new stroke of the passage itself.
+    return moves.length - baseline;
+  };
+
+  const straight = run([
+    { lon: 170, lat: 20, at: at(1) }, { lon: 175, lat: 21, at: at(2) },
+    { lon: 178, lat: 22, at: at(3) }
+  ]);
+  assert.strictEqual(straight, 1, 'one unbroken line');
+
+  const crossing = run([
+    { lon: 178, lat: 20, at: at(1) }, { lon: 179.5, lat: 21, at: at(2) },
+    { lon: -179, lat: 21.5, at: at(3) }, { lon: -176, lat: 22, at: at(4) }
+  ]);
+  assert.strictEqual(crossing, 2, 'lifted at the seam rather than drawn across Asia');
+
+  assert.strictEqual(run(null), 0, 'and nothing at all when there is none');
+  assert.strictEqual(FleetMap.passage, null);
+  // An empty answer is no passage, not a passage of nothing: callers ask
+  // whether there is one, and an empty array says yes.
+  FleetMap.setPassage([]);
+  assert.strictEqual(FleetMap.passage, null);
+
+  // One point is a dot, not a passage, and two are the minimum for a line.
+  assert.strictEqual(run([{ lon: 7, lat: 43, at: at(1) }]), 0,
+    'a single fix is not a passage');
+});
+
+test('a vessel being kept quiet has no passage drawn either', () => {
+  /**
+   * Her track is already withheld — "a track is a movement pattern; don't
+   * publish it" — and a passage is the same pattern over a longer window. The
+   * console never asks for one, and drops what it has if discretion is turned
+   * on while the answer is in flight.
+   */
+  const src = readRepo('js/console.js');
+  assert.ok(/availability && window\.Passage\.availability\.ok && !d\.discreet/.test(src),
+    'the panel is not built for a discreet vessel');
+  assert.ok(/if \(v\.derived\.discreet\) \{ say\(ui, 'Withheld in discreet mode/.test(src),
+    'and an answer that arrives after the switch is thrown is dropped');
+  assert.ok(/function toggleDiscreet\(\) \{[\s\S]{0,220}forgetPassage\(\);/.test(src),
+    'turning it on clears what is already drawn');
+  assert.ok(/function select\(yachtId\) \{[\s\S]{0,200}forgetPassage\(\);/.test(src),
+    'and so does selecting another vessel');
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

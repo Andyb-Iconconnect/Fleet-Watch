@@ -87,6 +87,12 @@
     startFeed();
     window.Weather.start();
 
+    // Asked once. Until it answers the passage panel is absent rather than
+    // present and broken, which is the right way round: most of the time the
+    // answer is "there is a record", and a panel that flickered in and out
+    // would be worse than one that arrives a moment late.
+    window.Passage.probe().then(function () { renderWork(true); });
+
     el('search').addEventListener('input', function (e) {
       App.query = e.target.value.trim().toLowerCase();
       renderRail(true);
@@ -529,6 +535,14 @@
     whereLine.appendChild(whereAge);
     host.appendChild(whereLine);
 
+    // Where she is, then where she has been. Only behind the relay, because a
+    // board opened from a single file has no record to ask — and never for a
+    // discreet vessel, for the same reason her track is not drawn: a passage is
+    // a movement pattern, and that is the whole thing being withheld.
+    if (window.Passage.availability && window.Passage.availability.ok && !d.discreet) {
+      host.appendChild(passagePanel(v));
+    }
+
     if (y.addedLocally) {
       var localPanel = h('div', 'panel');
       var localHead = h('div', 'pane-title');
@@ -844,6 +858,9 @@
   /* --- Interaction --------------------------------------------------------- */
 
   function select(yachtId) {
+    // A passage belongs to the vessel it was asked about. Left drawn, it would
+    // read as the next one's.
+    forgetPassage();
     App.selected = yachtId;
     el('chart-title').textContent = yachtId
       ? (selectedVessel() ? window.Fmt.fullName(selectedVessel().yacht) : 'Fleet')
@@ -887,6 +904,8 @@
   // the opposite of the office display, where it is locked on at install.
   function toggleDiscreet() {
     window.CONFIG.discreetMode = !window.CONFIG.discreetMode;
+    // Whatever is on the chart came from before the switch was thrown.
+    forgetPassage();
     var button = el('discreet-toggle');
     button.setAttribute('aria-pressed', String(window.CONFIG.discreetMode));
 
@@ -906,6 +925,167 @@
   }
 
   /* --- Adding a vessel ----------------------------------------------------- */
+
+
+  /* --- Where she has been -------------------------------------------------- */
+
+  /**
+   * The passage panel is built once per vessel and kept.
+   *
+   * The work column rebuilds itself every three seconds — an open record shows
+   * a live position and a fix age, and it has to. Rebuilding this with it would
+   * take the date picker out from under whoever had just opened it, and throw
+   * away what they had typed on the way.
+   */
+  var passageUi = null;
+
+  function passagePanel(v) {
+    if (passageUi && passageUi.yachtId === v.yacht.id) return passageUi.node;
+    passageUi = buildPassagePanel(v);
+    return passageUi.node;
+  }
+
+  function buildPassagePanel(v) {
+    var ui = { yachtId: v.yacht.id, node: h('div', 'panel passage') };
+    ui.node.appendChild(h('div', 'pane-title', 'Where she has been'));
+
+    var presets = h('div', 'passage-presets');
+    window.Passage.RANGES.forEach(function (preset) {
+      var button = h('button', 'button-quiet', preset.label);
+      button.type = 'button';
+      button.addEventListener('click', function () {
+        var range = window.Passage.rangeFor(preset.id);
+        ui.from.value = isoDay(range.from);
+        ui.to.value = isoDay(range.to);
+        load(ui, v);
+      });
+      presets.appendChild(button);
+    });
+    ui.node.appendChild(presets);
+
+    var row = h('div', 'passage-range');
+    ui.from = dateField(row, 'From');
+    ui.to = dateField(row, 'To');
+    var show = h('button', 'button-primary', 'Show');
+    show.type = 'button';
+    show.addEventListener('click', function () { load(ui, v); });
+    row.appendChild(show);
+    ui.clear = h('button', 'button-quiet', 'Clear');
+    ui.clear.type = 'button';
+    ui.clear.hidden = true;
+    ui.clear.addEventListener('click', function () {
+      window.FleetMap.setPassage(null);
+      ui.clear.hidden = true;
+      say(ui, 'Nothing drawn.', null);
+    });
+    row.appendChild(ui.clear);
+    ui.node.appendChild(row);
+
+    var opening = window.Passage.rangeFor('30d');
+    ui.from.value = isoDay(opening.from);
+    ui.to.value = isoDay(opening.to);
+
+    ui.status = h('div', 'passage-status');
+    ui.node.appendChild(ui.status);
+    say(ui, 'Pick a window and it is drawn on the chart.',
+      'The record holds what the relay heard, and only from the day it was ' +
+      'switched on — a window before that is empty rather than wrong.');
+    return ui;
+  }
+
+  function dateField(row, label) {
+    var wrap = h('label', 'passage-date');
+    wrap.appendChild(h('span', null, label));
+    var input = document.createElement('input');
+    input.type = 'date';
+    wrap.appendChild(input);
+    row.appendChild(wrap);
+    return input;
+  }
+
+  function isoDay(date) { return date.toISOString().slice(0, 10); }
+
+  function say(ui, main, note) {
+    ui.status.textContent = '';
+    ui.status.appendChild(h('div', 'p-main', main));
+    if (note) ui.status.appendChild(h('div', 'p-note', note));
+  }
+
+  function load(ui, v) {
+    var from = new Date(ui.from.value + 'T00:00:00Z');
+    var to = new Date(ui.to.value + 'T23:59:59Z');
+    if (!isFinite(from.getTime()) || !isFinite(to.getTime()) || to <= from) {
+      say(ui, 'Those dates do not make a window.',
+        'The second one has to be after the first.');
+      return;
+    }
+
+    say(ui, 'Reading the record…', null);
+    window.Passage.load(v.yacht.mmsi, from, to).then(function (out) {
+      // She may have been deselected, or discretion turned on, while the query
+      // was running. Drawing it then would put a movement pattern on a chart
+      // that has just been told not to show one.
+      if (!passageUi || passageUi.yachtId !== v.yacht.id) return;
+      if (v.derived.discreet) { say(ui, 'Withheld in discreet mode.', null); return; }
+
+      if (!out.points.length) {
+        window.FleetMap.setPassage(null);
+        ui.clear.hidden = true;
+        say(ui, 'Nothing recorded in that window.',
+          'Either she was not heard, or the record does not go back that far.');
+        return;
+      }
+
+      window.FleetMap.setPassage(out.points);
+      ui.clear.hidden = false;
+      // Padded a little more than the fleet view: a passage that runs to the
+      // edge of the canvas loses the end mark that says where it finished.
+      window.FleetMap.fit(out.points.map(function (p) { return [p.lon, p.lat]; }), 60);
+
+      var s = out.summary;
+      say(ui, [
+        s.positions.toLocaleString('en-GB') + ' positions',
+        Math.round(s.distanceNm).toLocaleString('en-GB') + ' nm',
+        day(s.from) + ' – ' + day(s.to)
+      ].join('  ·  '), passageCaveats(s, out.truncated));
+    }, function (err) {
+      if (!passageUi || passageUi.yachtId !== v.yacht.id) return;
+      say(ui, 'The record could not be read.', (err && err.message) || String(err));
+    });
+  }
+
+  /**
+   * What the number does not say.
+   *
+   * The distance is the sum of the legs actually recorded, so a week nobody
+   * heard her is a straight line across it — and the straight line is the part
+   * that looks most like data. Said out loud, with the gap, so the figure is
+   * read for what it is.
+   */
+  function passageCaveats(summary, truncated) {
+    var notes = [];
+    if (summary.longestGapHours >= 6) {
+      notes.push('longest gap ' + Math.round(summary.longestGapHours) +
+        ' hours — drawn straight across, which is a guess, not a course');
+    }
+    if (truncated) {
+      notes.push('more positions than could be sent: this is the earliest part ' +
+        'of the window, so narrow it to see the rest');
+    }
+    if (summary.topSpeed != null) {
+      notes.push('fastest recorded ' + window.Fmt.speed(summary.topSpeed));
+    }
+    return notes.length ? notes.join('  ·  ') : null;
+  }
+
+  function day(date) {
+    return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+  }
+
+  function forgetPassage() {
+    passageUi = null;
+    if (window.FleetMap.setPassage) window.FleetMap.setPassage(null);
+  }
 
   /* --- Importing vessels from a spreadsheet -------------------------------- */
 

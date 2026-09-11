@@ -307,10 +307,29 @@ and then blamed on the database. The answer says `truncated` if it hit the cap,
 because a caller that silently received the first five thousand rows would draw
 a passage that stops in the middle of the sea.
 
-**Not built yet:** anything in the console that uses this. The table, the
-recorder and the endpoint are here; a date picker on the console's vessel sheet
-that draws a past passage is the obvious next piece, and is a job on the board
-rather than on the relay.
+### On the console
+
+Open a vessel and there is a **Where she has been** panel under her position:
+four preset windows (7 days, 30 days, 3 months, this season), two date fields,
+and Show. The passage is drawn on the chart in near-white, under the live marks
+— she is still somewhere now, and a season painted over the present would hide
+the thing the board is for.
+
+The summary says what the line does not:
+
+> 225 positions · 296 nm · 12 Aug – 11 Sept
+> longest gap 50 hours — drawn straight across, which is a guess, not a course
+
+The distance is the sum of the legs actually recorded, so a season spent going
+out and coming back is not nought miles. The gap matters more: the record holds
+only what was heard, and a straight line across two days of silence is the part
+of the picture that looks most like data.
+
+The panel is **absent** rather than broken when there is nothing to ask — a
+board opened from a single file on a stick, a relay with no SQL, a database
+that is down. It is also never offered for a vessel in discreet mode, for the
+same reason her live track is not drawn: a passage is a movement pattern, and
+that is the whole thing being withheld.
 
 ---
 
