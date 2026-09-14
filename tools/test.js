@@ -6134,6 +6134,77 @@ test('the console asks the shared rule rather than keeping its own copy', () => 
     'and it is loaded before the console that calls it');
 });
 
+test('the overview list narrows with the rail, and the tiles do not', () => {
+  /**
+   * Three views, one rule: the rail, the chart and this list all answer the
+   * chips and the search box. The tiles above it deliberately do not — they are
+   * the fleet's state, they say "of 61" on their faces, and a filter that
+   * changed them would leave nothing on the screen able to say how many yachts
+   * there are.
+   */
+  const src = readRepo('js/console.js');
+  const overview = src.slice(src.indexOf('function renderOverview'),
+                             src.indexOf('function tile('));
+
+  assert.ok(/var byDistance = visibleVessels\(\)/.test(overview),
+    'the list is the filtered set');
+  assert.ok(!/window\.Store\.vessels\.slice\(\)/.test(overview),
+    'and not the whole store');
+  assert.ok(/var summary = window\.Store\.summary\(\)/.test(overview) &&
+            /countState\(summary, pair\[0\]\)/.test(overview),
+    'the tiles still count the fleet');
+
+  /**
+   * Two different nothings. Telling somebody fleet.js is empty when they have
+   * filtered to a state none of them are in sends them looking in entirely the
+   * wrong place — and "No signal" with a healthy feed is exactly that case.
+   */
+  assert.ok(/'None of them match that\.'/.test(overview), 'nothing matched');
+  assert.ok(/'No vessels in fleet\.js\.'/.test(overview), 'and nothing to match');
+  assert.ok(/window\.Store\.vessels\.length\s*\?/.test(overview),
+    'told apart by whether there is a fleet at all');
+});
+
+test('the chip that clears a narrowing does not select a vessel on the way', () => {
+  /**
+   * It sits at the head of a list whose rows select a yacht when clicked, and
+   * the work pane catches those by looking upward from whatever was hit. A
+   * click that both cleared the filter and opened a record would be two things
+   * happening for one press.
+   */
+  const src = readRepo('js/console.js');
+  const chip = src.slice(src.indexOf('function narrowingChip'),
+                         src.indexOf('function clearNarrowing'));
+  assert.ok(/event\.stopPropagation\(\)/.test(chip));
+  assert.ok(/clearNarrowing\(\)/.test(chip));
+
+  // And clearing puts back everything that was narrowed, not just the chips.
+  const clear = src.slice(src.indexOf('function clearNarrowing'),
+                          src.indexOf('var lastRailRender'));
+  assert.ok(/App\.filter = 'all'/.test(clear));
+  assert.ok(/App\.query = ''/.test(clear));
+  assert.ok(/search\.value = ''/.test(clear), 'including the box it was typed in');
+});
+
+test('narrowing refreshes the overview at once, but not an open record', () => {
+  /**
+   * The work column is throttled to three seconds because it runs on every
+   * store change. A filter is not a store change — somebody has just pressed a
+   * chip and is looking at the result — so it is forced. An open vessel record
+   * does not depend on the filter at all, so it is left alone rather than
+   * rebuilt under whoever is reading it.
+   */
+  const src = readRepo('js/console.js');
+  const onFilter = src.slice(src.indexOf('function onFilterClick'),
+                             src.indexOf('function toggleDiscreet'));
+  assert.ok(/if \(!App\.selected\) renderWork\(true\);/.test(onFilter));
+
+  const boot = src.slice(src.indexOf("el('search').addEventListener"),
+                         src.indexOf("el('rail-list').addEventListener"));
+  assert.ok(/if \(!App\.selected\) renderWork\(true\);/.test(boot),
+    'and typing in the search box does the same');
+});
+
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */
 
 runDeferred().then(function () {

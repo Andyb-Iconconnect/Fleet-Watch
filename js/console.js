@@ -96,6 +96,7 @@
     el('search').addEventListener('input', function (e) {
       App.query = e.target.value.trim().toLowerCase();
       renderRail(true);
+      if (!App.selected) renderWork(true);
     });
     el('rail-list').addEventListener('click', onRailClick);
     el('work').addEventListener('click', onWorkClick);
@@ -275,6 +276,25 @@
     chip.title = 'Showing only these on the chart — click to show them all';
   }
 
+  /**
+   * The chip that says what is being shown, and takes it back.
+   *
+   * The same thing in the chart's header and at the head of this list, because
+   * it answers the same question in both places — why are there three of them —
+   * and because the way out should be wherever the question is asked.
+   */
+  function narrowingChip(label) {
+    var chip = h('button', 'filter-chip', label);
+    chip.type = 'button';
+    chip.title = 'Showing only these — click to show them all';
+    chip.addEventListener('click', function (event) {
+      // The rows behind it select a vessel on click; this is not one of them.
+      event.stopPropagation();
+      clearNarrowing();
+    });
+    return chip;
+  }
+
   function clearNarrowing() {
     App.filter = 'all';
     App.query = '';
@@ -282,6 +302,7 @@
     if (search) search.value = '';
     renderFilters();
     renderRail(true);
+    if (!App.selected) renderWork(true);
     window.Browse.release();
     aimChart();
     renderChartHome();
@@ -418,13 +439,27 @@
     }
     host.appendChild(tiles);
 
-    // The whole fleet in one table: where each one is, and how far off she is.
-    // The rail beside this is filtered and searched; this is not.
+    /**
+     * Where each of them is, and how far off.
+     *
+     * Narrowed by the same chips and the same search box as the rail and the
+     * chart — three views, one rule. The tiles above are deliberately NOT: they
+     * are the fleet's state, they say "of 61" on their faces, and a filter that
+     * changed them would leave nothing on the screen able to answer how many
+     * yachts there are.
+     */
+    var narrowed = window.FleetFilter.label(App.filter, App.query,
+      visibleVessels().length, window.Store.vessels.length);
+
     var panel = h('div', 'panel');
-    panel.appendChild(h('div', 'pane-title', 'Where the fleet is'));
+    var title = h('div', 'pane-title');
+    title.appendChild(document.createTextNode(
+      narrowed ? 'Where these are' : 'Where the fleet is'));
+    if (narrowed) title.appendChild(narrowingChip(narrowed));
+    panel.appendChild(title);
     var rows = h('div', 'rows');
 
-    var byDistance = window.Store.vessels.slice().sort(function (a, b) {
+    var byDistance = visibleVessels().sort(function (a, b) {
       var da = a.derived.fromOffice, db = b.derived.fromOffice;
       if (da == null && db == null) return a.yacht.name.localeCompare(b.yacht.name);
       if (da == null) return 1;
@@ -433,7 +468,12 @@
     });
 
     if (!byDistance.length) {
-      rows.appendChild(h('div', 'empty', 'No vessels in fleet.js.'));
+      // Two different nothings, and telling somebody the fleet file is empty
+      // when they have simply filtered to a state none of them are in would
+      // send them looking in entirely the wrong place.
+      rows.appendChild(h('div', 'empty', window.Store.vessels.length
+        ? 'None of them match that.'
+        : 'No vessels in fleet.js.'));
     }
     byDistance.forEach(function (v) {
       var d = v.derived;
@@ -916,6 +956,10 @@
     if (!button) return;
     App.filter = button.dataset.filter;
     renderRail(true);
+    // The overview list narrows with it. Only when it is the thing on screen:
+    // an open vessel record does not depend on the filter, and rebuilding it
+    // would be work nobody asked for.
+    if (!App.selected) renderWork(true);
     // The chart now holds a different set, so it is pointed at it. Released
     // first: having dragged the chart somewhere and then asked for Sentinel,
     // what you want is the Sentinel fleet, not wherever you happened to be.

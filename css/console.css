@@ -1271,13 +1271,15 @@ body.dropping::after {
   color: var(--text-muted);
 }
 
-/* --- What the chart is showing, when it is not showing all of them --------
+/* --- What is being shown, when it is not all of them ----------------------
  *
- * Sits in the chart's own header rather than beside the filter chips: the
- * question it answers is "why are there nine marks", and that is asked while
- * looking at the chart. It is also the way out, so it reads as a button.
+ * In the chart's own header and at the head of the overview list, rather than
+ * beside the filter chips: the question it answers is "why are there three of
+ * them", and that is asked while looking at the three. It is also the way out,
+ * so it reads as a button.
  */
-.chart-filter {
+.chart-filter,
+.filter-chip {
   all: unset;
   cursor: pointer;
   flex: 0 1 auto;
@@ -1295,7 +1297,16 @@ body.dropping::after {
   text-transform: uppercase;
 }
 .chart-filter:hover,
-.chart-filter:focus-visible {
+.chart-filter:focus-visible,
+.filter-chip:hover,
+.filter-chip:focus-visible {
   border-color: var(--brand-cyan);
   color: var(--text-primary);
+}
+
+/* Beside the panel heading rather than under it: it is a qualifier on "where
+   these are", not a line of its own. */
+.filter-chip {
+  margin-left: 0.5rem;
+  vertical-align: 0.05em;
 }
