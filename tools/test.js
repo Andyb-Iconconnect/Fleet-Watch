@@ -45,10 +45,10 @@ const readRepo = (f) => fs.readFileSync(path.join(__dirname, '..', f), 'utf8');
  'js/geo.js', 'js/format.js', 'js/store.js', 'js/ais.js', 'js/vessel.js',
  'js/demo.js', 'js/csv.js', 'js/map.js', 'js/cluster.js',
  'js/marinetraffic.js', 'js/vesselapi.js', 'js/relay.js',
- 'js/feed.js', 'js/passage.js'].forEach(load);
+ 'js/feed.js', 'js/passage.js', 'js/fleetfilter.js'].forEach(load);
 
 const { Geo, Fmt, Store, Ais, Vessel, Demo, Csv, PORTS, CONFIG, Cluster,
-        MarineTraffic, VesselApi, Relay, Passage } = window;
+        MarineTraffic, VesselApi, Relay, Passage, FleetFilter } = window;
 const FleetMap = window.FleetMap;
 
 // The behavioural tests run against a fixed sample fleet, NOT against fleet.js.
@@ -2085,16 +2085,30 @@ test('an unlocked board still withholds the yachts that are marked', () => {
 
 test('the console counts every vessel too, not just the board', () => {
   // The same fault lived in three more places on the desk tool: the rail
-  // filter chips, the overview tiles, and the count beside each chip.
-  const source = readRepo('js/console.js');
+  // filter chips, the overview tiles, and the count beside each chip. The
+  // buckets moved out of console.js when the chart started narrowing too —
+  // there are now two views obeying them, which is exactly when a rule stops
+  // being allowed to live in a closure.
+  const source = readRepo('js/fleetfilter.js');
   assert.ok(/var STATE_BUCKETS = \{/.test(source),
     'one place decides which statuses a label covers');
   assert.ok(/dark: \['dark', 'unknown'\]/.test(source),
     'and a vessel never heard from is counted somewhere');
   assert.ok(!/return v\.derived\.status === filter;/.test(source),
     'the filter goes through the buckets rather than matching a status by name');
-  assert.ok(!/'fix ' \+ window\.Fmt\.age\(v\.fix && v\.fix\.at\)/.test(source),
+  assert.ok(!/STATE_BUCKETS\s*=\s*\{/.test(readRepo('js/console.js')),
+    'and the console has no second copy of them');
+  assert.ok(!/'fix ' \+ window\.Fmt\.age\(v\.fix && v\.fix\.at\)/.test(readRepo('js/console.js')),
     'and a vessel with no fix does not read "fix no fix"');
+
+  // The rule is not only written down in one place, it behaves. A vessel never
+  // heard from answers "which of them can I not see" as much as one that has
+  // gone quiet.
+  const bucketed = (status) => FleetFilter.matches(
+    { yacht: {}, derived: { status: status } }, 'dark');
+  assert.strictEqual(bucketed('unknown'), true, 'never heard from');
+  assert.strictEqual(bucketed('dark'), true, 'and gone quiet');
+  assert.strictEqual(bucketed('moored'), false);
 });
 
 test('the four tiles account for every vessel', () => {
@@ -3025,11 +3039,18 @@ test('sentinel is a relationship, not a status', () => {
    * rather than instead of it. Her own status colour stays the thing you read
    * first.
    */
+  // Behaviour, not just the source: she is Sentinel whatever she is doing, and
+  // a yacht that is not on the package is not Sentinel however she is moving.
+  const sentinel = { yacht: { sentinel: true }, derived: { status: 'moored' } };
+  const ordinary = { yacht: {}, derived: { status: 'underway' } };
+  assert.strictEqual(FleetFilter.matches(sentinel, 'sentinel'), true);
+  assert.strictEqual(FleetFilter.matches(ordinary, 'sentinel'), false);
+  assert.strictEqual(FleetFilter.matches(sentinel, 'moored'), true,
+    'and she is still alongside — the two narrowings are independent');
+  assert.ok(!/sentinel/.test(JSON.stringify(FleetFilter.BUCKETS)),
+    'it is not folded in with the statuses, which must still add up to the fleet');
+
   const console_ = readRepo('js/console.js');
-  assert.ok(/if \(filter === 'sentinel'\) return !!v\.yacht\.sentinel;/.test(console_),
-    'the filter matches on the flag, not on a derived state');
-  assert.ok(!/STATE_BUCKETS\s*=\s*\{[^}]*sentinel/.test(console_),
-    'and it is not folded in with the statuses, which must still add up to the fleet');
   assert.ok(/status === 'sentinel'\) return 'var\(--sentinel\)'/.test(console_),
     'its chip has a colour of its own — var(--status-sentinel) resolves to nothing');
 
@@ -5996,6 +6017,121 @@ test('a vessel being kept quiet has no passage drawn either', () => {
     'turning it on clears what is already drawn');
   assert.ok(/function select\(yachtId\) \{[\s\S]{0,200}forgetPassage\(\);/.test(src),
     'and so does selecting another vessel');
+});
+
+/* -----------------------------------------------------------------------------
+ * Narrowing the fleet — one rule, two views.
+ *
+ * The chips and the search box used to narrow only the rail. The chart now
+ * obeys the same answer, which is why the rule lives in a file of its own
+ * rather than in a closure in console.js.
+ * ------------------------------------------------------------------------- */
+
+function filterFleet() {
+  const mk = (id, name, status, extra) => ({
+    yacht: Object.assign({ id: id, name: name, mmsi: 200000000 }, extra || {}),
+    derived: { status: status, port: { name: 'Antibes' } }
+  });
+  return [
+    mk('b', 'Beta', 'underway'),
+    mk('a', 'Alpha', 'moored', { sentinel: true }),
+    mk('d', 'Delta', 'unknown'),
+    mk('c', 'Cerulean', 'anchored', { builder: 'Feadship', imo: 9249403 })
+  ];
+}
+
+test('the rail is alphabetical, whatever order the fleet file is in', () => {
+  // It is read as a list of names, and a list of names that is not in order is
+  // a list you have to search rather than scan.
+  const names = FleetFilter.rail(filterFleet(), 'all', '')
+    .map(function (v) { return v.yacht.name; });
+  assert.deepStrictEqual(names, ['Alpha', 'Beta', 'Cerulean', 'Delta']);
+});
+
+test('a search reaches everything somebody might have in front of them', () => {
+  /**
+   * Whichever number is on the piece of paper is the one they will type, and
+   * "who is in Antibes" is asked by typing Antibes.
+   */
+  const fleet = filterFleet();
+  const found = (q) => FleetFilter.rail(fleet, 'all', q).map((v) => v.yacht.name);
+
+  assert.deepStrictEqual(found('cerul'), ['Cerulean'], 'part of a name');
+  assert.deepStrictEqual(found('CERUL'), ['Cerulean'], 'and case does not matter');
+  assert.deepStrictEqual(found('feadship'), ['Cerulean'], 'the builder');
+  assert.deepStrictEqual(found('9249403'), ['Cerulean'], 'the IMO');
+  assert.strictEqual(found('antibes').length, 4, 'and the port she is off');
+  assert.deepStrictEqual(found('nothing here'), [], 'and no match is no match');
+});
+
+test('the chart shows what the rail shows, and the one you opened', () => {
+  /**
+   * The rule that makes this learnable is that there is one rule. But a vessel
+   * you have selected stays on the chart even when the filter has just excluded
+   * her: you asked for her by name, her record is open beside the chart, and
+   * dropping her the moment somebody clicked "Underway" would be answering a
+   * question nobody asked.
+   */
+  const fleet = filterFleet();
+  const ids = (filter, selected) => FleetFilter.chart(fleet, filter, '', selected)
+    .map(function (v) { return v.yacht.id; }).sort();
+
+  assert.deepStrictEqual(ids('underway', null), ['b']);
+  assert.deepStrictEqual(ids('underway', 'a'), ['a', 'b'],
+    'the selected yacht is kept even though she is alongside');
+  assert.deepStrictEqual(ids('underway', 'b'), ['b'],
+    'and not listed twice when the filter already has her');
+  assert.deepStrictEqual(ids('underway', 'no-such-yacht'), ['b'],
+    'a selection that is not in the fleet adds nothing');
+  assert.deepStrictEqual(ids('sentinel', null), ['a']);
+
+  // Nothing matching is an empty chart, not the whole fleet. The alternative —
+  // falling back to everything — is a filter that silently does the opposite of
+  // what it says.
+  const nobody = FleetFilter.chart(fleet.slice(0, 1), 'anchored', '', null);
+  assert.deepStrictEqual(nobody, []);
+});
+
+test('the chart says when it is not showing the fleet', () => {
+  /**
+   * Nine marks out of sixty-one with nothing to say it is filtered is a chart
+   * that has quietly stopped being the fleet — and this one is read over
+   * somebody's shoulder.
+   */
+  assert.strictEqual(FleetFilter.label('all', '', 61, 61), null,
+    'and says nothing when there is nothing to say');
+  assert.strictEqual(FleetFilter.label(null, null, 61, 61), null);
+
+  assert.strictEqual(FleetFilter.label('sentinel', '', 3, 61), 'Sentinel  ·  3 of 61');
+  assert.strictEqual(FleetFilter.label('dark', '', 0, 61), 'No signal  ·  0 of 61',
+    'including when the answer is none of them');
+  assert.ok(/“aviva”/.test(FleetFilter.label('all', 'aviva', 1, 61)),
+    'a search is quoted, so it reads as something typed');
+  assert.strictEqual(FleetFilter.label('underway', 'aviva', 1, 61),
+    'Underway · “aviva”  ·  1 of 61', 'and both at once');
+
+  // A filter matching everything still says so: she may leave the berth, and
+  // the chart would drop her without explanation.
+  assert.strictEqual(FleetFilter.label('moored', '', 61, 61), 'Alongside  ·  61 of 61');
+});
+
+test('the console asks the shared rule rather than keeping its own copy', () => {
+  const src = readRepo('js/console.js');
+  assert.ok(/window\.FleetFilter\.rail\(window\.Store\.vessels, App\.filter, App\.query\)/.test(src),
+    'the rail');
+  assert.ok(/window\.FleetFilter\.chart\(window\.Store\.vessels, App\.filter, App\.query,/.test(src),
+    'the chart');
+  assert.ok(/FleetMap\.render\(now, chartVessels\(\)/.test(src),
+    'and it is that list the chart is given, not the whole store');
+  assert.ok(/window\.FleetMap\.fit\(points, 40\)/.test(src),
+    'fitted to what is drawn, so a filter to three yachts is not three yachts ' +
+    'somewhere in the Mediterranean');
+
+  // Both pages load it before whatever uses it.
+  const html = readRepo('console.html');
+  assert.ok(html.indexOf('js/fleetfilter.js') > -1 &&
+            html.indexOf('js/fleetfilter.js') < html.indexOf('js/console.js'),
+    'and it is loaded before the console that calls it');
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

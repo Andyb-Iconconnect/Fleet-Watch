@@ -103,6 +103,7 @@
     window.Browse.attach(el('chart-canvas'), onChartClick, renderChartHome);
     el('chart-home').addEventListener('click', chartHome);
     el('clear-selection').addEventListener('click', function () { select(null); });
+    el('chart-filter').addEventListener('click', clearNarrowing);
     el('discreet-toggle').addEventListener('click', toggleDiscreet);
     wireAddDialog();
     wirePhotoImport();
@@ -182,21 +183,9 @@
    * with `dark`: the two differ in how they came about, which the vessel's own
    * record still says, and not at all in what the reader needs from a count.
    */
-  var STATE_BUCKETS = {
-    underway: ['underway'],
-    anchored: ['anchored'],
-    moored: ['moored'],
-    dark: ['dark', 'unknown']
-  };
-
-  var FILTERS = [
-    ['all', 'All'],
-    ['sentinel', 'Sentinel'],
-    ['underway', 'Underway'],
-    ['anchored', 'At anchor'],
-    ['moored', 'Alongside'],
-    ['dark', 'No signal']
-  ];
+  // Who is being looked at is one rule, shared by the rail and the chart, and
+  // it lives in js/fleetfilter.js so it can be tested without a browser.
+  var FILTERS = window.FleetFilter.FILTERS;
 
   function renderFilters() {
     var host = el('filters');
@@ -239,31 +228,63 @@
   }
 
   function matchesFilter(v, filter) {
-    if (filter === 'all') return true;
-    // Sentinel is a commercial relationship, not a state she can be in, so it
-    // filters across all four statuses rather than sitting beside them.
-    if (filter === 'sentinel') return !!v.yacht.sentinel;
-    var states = STATE_BUCKETS[filter] || [filter];
-    return states.indexOf(v.derived.status) !== -1;
-  }
-
-  function matchesQuery(v) {
-    if (!App.query) return true;
-    var y = v.yacht;
-    var hay = [
-      y.name, y.prefix, y.flag, y.flagCode, y.callSign, y.builder, y.classSociety,
-      String(y.imo), String(y.mmsi),
-      v.derived.port ? v.derived.port.name : ''
-    ].join(' ').toLowerCase();
-    return hay.indexOf(App.query) !== -1;
+    return window.FleetFilter.matches(v, filter);
   }
 
   function visibleVessels() {
-    return window.Store.vessels.filter(function (v) {
-      return matchesFilter(v, App.filter) && matchesQuery(v);
-    }).sort(function (a, b) {
-      return a.yacht.name.localeCompare(b.yacht.name);
-    });
+    return window.FleetFilter.rail(window.Store.vessels, App.filter, App.query);
+  }
+
+  /**
+   * What the chart draws.
+   *
+   * The same list as the rail, and that is the whole rule: filter to Sentinel
+   * and the chart is the Sentinel fleet, search for a name and the chart is
+   * what you searched for. Two lists that narrow differently would be two
+   * things to hold in your head, and the one on the chart is the one you cannot
+   * read the labels of.
+   *
+   * With one exception. A vessel you have selected stays on the chart even when
+   * the filter has just excluded her — you asked for her by name, her record is
+   * open beside it, and a chart that dropped her the moment you clicked
+   * "Underway" would be answering a question nobody had asked. The same rule
+   * the clustering already follows: the selected yacht is never swallowed.
+   */
+  function chartVessels() {
+    return window.FleetFilter.chart(window.Store.vessels, App.filter, App.query,
+      App.selected);
+  }
+
+  /**
+   * Say so, and offer the way out.
+   *
+   * A chart showing nine of sixty-one with nothing to say it is filtered is a
+   * chart that has quietly stopped being the fleet — and this one is read over
+   * somebody's shoulder. The chip carries the count and clears the narrowing
+   * when it is clicked, so the way back is visible at the moment it is needed
+   * rather than something you have to remember.
+   */
+  function renderChartFilter() {
+    var chip = el('chart-filter');
+    if (!chip) return;
+    var label = window.FleetFilter.label(App.filter, App.query,
+      chartVessels().length, window.Store.vessels.length);
+    chip.hidden = !label;
+    if (!label) return;
+    chip.textContent = label;
+    chip.title = 'Showing only these on the chart — click to show them all';
+  }
+
+  function clearNarrowing() {
+    App.filter = 'all';
+    App.query = '';
+    var search = el('search');
+    if (search) search.value = '';
+    renderFilters();
+    renderRail(true);
+    window.Browse.release();
+    aimChart();
+    renderChartHome();
   }
 
   var lastRailRender = 0;
@@ -280,6 +301,7 @@
     var host = el('rail-list');
     host.textContent = '';
     var list = visibleVessels();
+    renderChartFilter();
 
     list.forEach(function (v) {
       var row = h('button', 'vessel-row');
@@ -368,7 +390,7 @@
   ];
 
   function countState(summary, key) {
-    return (STATE_BUCKETS[key] || [key]).reduce(function (sum, state) {
+    return (window.FleetFilter.BUCKETS[key] || [key]).reduce(function (sum, state) {
       return sum + (summary.counts[state] || 0);
     }, 0);
   }
@@ -750,9 +772,16 @@
       var degreesWanted = 420 / 60 / Math.max(0.2, Math.cos(v.derived.lat * Math.PI / 180));
       window.FleetMap.centreOn(v.derived.lon, v.derived.lat, 360 * rect.width / degreesWanted);
     } else {
-      window.FleetMap.fit(window.Store.vessels
+      // Fitted to what is drawn, not to the fleet: filtering to three yachts
+      // off Sardinia and being left looking at the whole Mediterranean is the
+      // filter not having done anything you can see.
+      var points = chartVessels()
         .filter(function (x) { return x.derived.lat != null; })
-        .map(function (x) { return [x.derived.lon, x.derived.lat]; }), 40);
+        .map(function (x) { return [x.derived.lon, x.derived.lat]; });
+      // fit() declines an empty list and leaves the camera where it is, which
+      // is right: a filter that matches nothing should not throw the view out
+      // to the whole world as well.
+      window.FleetMap.fit(points, 40);
     }
   }
 
@@ -849,7 +878,7 @@
     lastChartFrame = now;
     // No ambient drift here — a tool that wanders under the pointer is a
     // nuisance, whatever it does for a wall.
-    window.FleetMap.render(now, window.Store.vessels, {
+    window.FleetMap.render(now, chartVessels(), {
       highlight: App.selected,
       noDrift: true
     });
@@ -887,6 +916,12 @@
     if (!button) return;
     App.filter = button.dataset.filter;
     renderRail(true);
+    // The chart now holds a different set, so it is pointed at it. Released
+    // first: having dragged the chart somewhere and then asked for Sentinel,
+    // what you want is the Sentinel fleet, not wherever you happened to be.
+    window.Browse.release();
+    aimChart();
+    renderChartHome();
   }
 
   // Browse owns the pointer now: it tells us when a press was a click rather

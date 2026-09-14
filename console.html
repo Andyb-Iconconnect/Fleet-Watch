@@ -67,6 +67,10 @@
   <aside class="chartpane">
     <div class="chartpane-head">
       <span class="pane-title" id="chart-title">Fleet</span>
+      <!-- What the chart is currently showing, when it is not showing all of
+           them. Also the way back: a filtered chart that did not say so would
+           be a chart that has quietly stopped being the fleet. -->
+      <button class="chart-filter" id="chart-filter" type="button" hidden></button>
       <button class="linkish" id="clear-selection" type="button" hidden>Show all vessels</button>
     </div>
     <div class="chart-holder">
@@ -461,6 +465,7 @@
 <script src="js/vesselapi.js"></script>
 <script src="js/relay.js"></script>
 <script src="js/passage.js"></script>
+<script src="js/fleetfilter.js"></script>
 <script src="js/feed.js"></script>
 <script src="js/demo.js"></script>
 <script src="js/weather.js"></script>

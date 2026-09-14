@@ -1270,3 +1270,32 @@ body.dropping::after {
   line-height: 1.5;
   color: var(--text-muted);
 }
+
+/* --- What the chart is showing, when it is not showing all of them --------
+ *
+ * Sits in the chart's own header rather than beside the filter chips: the
+ * question it answers is "why are there nine marks", and that is asked while
+ * looking at the chart. It is also the way out, so it reads as a button.
+ */
+.chart-filter {
+  all: unset;
+  cursor: pointer;
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.chart-filter:hover,
+.chart-filter:focus-visible {
+  border-color: var(--brand-cyan);
+  color: var(--text-primary);
+}
