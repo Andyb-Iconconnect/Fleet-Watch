@@ -1,7 +1,11 @@
 /* -----------------------------------------------------------------------------
- * Bundles the whole board into one self-contained .html file.
+ * Bundles ONE page into a self-contained .html file.
  *
  *   node tools/build-single-file.js [out.html] [--display] [--offline] [--fragment]
+ *
+ * To build everything, use `npm run build` (tools/build-all.js) instead. This
+ * builds a single page, and running it on its own is how dist/ ended up with a
+ * six-day-old console sitting beside a current board.
  *
  * Useful when the board has to travel: one file to email, drop on a USB stick,
  * or open straight off disk with no server at all.

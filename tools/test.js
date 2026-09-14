@@ -5408,6 +5408,14 @@ test('the relay serves the board but not itself', () => {
   assert.strictEqual(r.fleet.cache, 'no-store');
   assert.strictEqual(r.board.cache, 'no-cache',
     'and a wall must not still be running an old build after a deployment');
+  /**
+   * The scripts too, and for a worse reason than staleness. A new page holding
+   * an old script is not an old build, it is a broken one: the page asks for a
+   * file the cached copy has never heard of, and the tool dies before it draws
+   * anything. no-cache still allows a 304, so an unchanged file costs a
+   * request and no body.
+   */
+  assert.strictEqual(r.script.cache, 'no-cache');
 
   /**
    * The history endpoint refuses what it cannot answer, in words.
@@ -6203,6 +6211,106 @@ test('narrowing refreshes the overview at once, but not an open record', () => {
                          src.indexOf("el('rail-list').addEventListener"));
   assert.ok(/if \(!App\.selected\) renderWork\(true\);/.test(boot),
     'and typing in the search box does the same');
+});
+
+/* -----------------------------------------------------------------------------
+ * Stale builds.
+ *
+ * dist/fleet-console.html sat six days behind the repository across four
+ * releases while the board beside it was current, because `npm run build` built
+ * the board and the console was a second command nobody remembered. A console
+ * handed out on a USB stick was missing a week of work and said nothing about
+ * it — it looked like a console, it just quietly did not do the things it had
+ * been asked to do.
+ * ------------------------------------------------------------------------- */
+
+test('one command builds every bundle', () => {
+  const build = readRepo('tools/build-all.js');
+  const names = [...build.matchAll(/out: '([^']+)'/g)].map((m) => m[1]);
+  assert.ok(names.indexOf('fleet-watch.html') !== -1, 'the board');
+  assert.ok(names.indexOf('fleet-console.html') !== -1, 'and the desk tool');
+  assert.ok(names.length >= 4, 'and the variants: ' + names.join(', '));
+
+  // npm run build must be the one that does all of them, or this is a file
+  // nobody runs and the whole exercise was pointless.
+  const pkg = JSON.parse(readRepo('package.json'));
+  assert.strictEqual(pkg.scripts.build, 'node tools/build-all.js');
+  assert.ok(/build-single-file/.test(pkg.scripts['build:one']),
+    'and building one on its own is still possible, just not the default');
+});
+
+test('every page a bundle is made from loads every script it needs', () => {
+  /**
+   * The check that would have caught it. A bundle inlines exactly the script
+   * tags in its entry page, so a page missing one produces a bundle missing
+   * one — and the symptom is a tool that boots into nothing.
+   *
+   * Every file in js/ has to be named here, which is the point: add one and
+   * the suite makes you say which pages it belongs to rather than letting it
+   * be quietly on neither.
+   */
+  const SHARED = ['geo.js', 'format.js', 'store.js', 'vessel.js', 'feed.js',
+                  'map.js', 'cluster.js', 'settings.js', 'photos.js',
+                  'profile.js', 'weather.js', 'picker.js', 'ais.js', 'demo.js',
+                  'marinetraffic.js', 'relay.js', 'vesselapi.js'];
+  const BOARD_ONLY = ['app.js', 'views.js'];
+  const CONSOLE_ONLY = ['console.js', 'browse.js', 'csv.js', 'fleetfilter.js',
+                        'passage.js'];
+
+  const onDisk = fs.readdirSync(path.join(__dirname, '..', 'js'))
+    .filter((f) => f.endsWith('.js')).sort();
+  const named = SHARED.concat(BOARD_ONLY, CONSOLE_ONLY).sort();
+  assert.deepStrictEqual(onDisk, named,
+    'every module is accounted for — a new one must be given a page');
+
+  const board = readRepo('index.html');
+  const desk = readRepo('console.html');
+  const has = (html, m) => html.indexOf('js/' + m + '"') !== -1;
+
+  SHARED.forEach((m) => {
+    assert.ok(has(board, m), 'index.html loads js/' + m);
+    assert.ok(has(desk, m), 'console.html loads js/' + m);
+  });
+  BOARD_ONLY.forEach((m) => {
+    assert.ok(has(board, m), 'index.html loads js/' + m);
+    assert.ok(!has(desk, m), 'and the console does not carry js/' + m);
+  });
+  CONSOLE_ONLY.forEach((m) => {
+    assert.ok(has(desk, m), 'console.html loads js/' + m);
+    assert.ok(!has(board, m), 'and the board does not carry js/' + m);
+  });
+});
+
+test('a console missing a file says which one, rather than nothing at all', () => {
+  /**
+   * One script missing takes the whole tool down before a line of it has run:
+   * the IIFE throws, boot() is never called, and what you get is a blank page
+   * with an error only somebody who opens developer tools will ever see. That
+   * is what a stale bundle looks like from the outside.
+   */
+  const src = readRepo('js/console.js');
+  assert.ok(/function partsLoaded\(\)/.test(src));
+  assert.ok(/if \(!partsLoaded\(\)\) return;/.test(src), 'checked before anything else');
+  assert.ok(/npm run build/.test(src), 'and it says what to do about it');
+
+  // Every module the console reaches for is in the list, or the guard reports
+  // "nothing missing" about a file that is.
+  const parts = src.slice(src.indexOf('var PARTS = ['), src.indexOf('function partsLoaded'));
+  const used = new Set([...src.matchAll(/window\.([A-Z][A-Za-z]+)\./g)].map((m) => m[1]));
+  ['FleetFilter', 'Passage', 'FleetMap', 'Store', 'Feed'].forEach((name) => {
+    assert.ok(used.has(name), 'the console does use ' + name);
+    assert.ok(parts.indexOf("'" + name + "'") !== -1,
+      name + ' is checked for before it is used');
+  });
+
+  /**
+   * And nothing may be touched at load time, or the guard never gets to run.
+   * `var FILTERS = window.FleetFilter.FILTERS;` at the top of the file threw
+   * before boot() was reached, which is the precise failure this replaces.
+   */
+  const preamble = src.slice(0, src.indexOf('function boot()'));
+  assert.ok(!/^\s*var \w+ = window\.[A-Z]\w*\./m.test(preamble),
+    'no module is read at load time');
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

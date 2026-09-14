@@ -181,9 +181,23 @@ function create(ctx) {
       res.writeHead(200, {
         'Content-Type': type,
         'Content-Length': stat.size,
-        // The board is a screensaver that reloads itself; a cached index.html
-        // means a wall still running last month's build after a deployment.
-        'Cache-Control': /\.html$/.test(file) ? 'no-cache' : 'public, max-age=300'
+        /**
+         * Revalidate everything, cache nothing blind.
+         *
+         * The board is a screensaver that reloads itself and the console is a
+         * tool somebody leaves open for a week, so a cached page means a screen
+         * still running last month's build after a deployment. The scripts
+         * matter just as much, and in a nastier way: a new page holding an old
+         * script is not an old build, it is a broken one — the page asks for a
+         * file the cached bundle has never heard of and the whole tool dies
+         * before it draws anything.
+         *
+         * `no-cache` is not "do not store": the browser keeps the file and asks
+         * whether it has changed, so an unchanged one comes back as a 304 with
+         * no body. The cost is one small request per file per load; the thing
+         * it buys is that a deployment is actually deployed.
+         */
+        'Cache-Control': 'no-cache'
       });
       fs.createReadStream(file).pipe(res);
     });

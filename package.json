@@ -7,8 +7,9 @@
   "scripts": {
     "start": "node server/index.js",
     "test": "node tools/test.js",
-    "build": "node tools/build-single-file.js",
-    "check-sql": "node server/check-sql.js"
+    "build": "node tools/build-all.js",
+    "check-sql": "node server/check-sql.js",
+    "build:one": "node tools/build-single-file.js"
   },
   "engines": {
     "node": ">=22"

@@ -69,7 +69,53 @@
     return false;
   }
 
+  /**
+   * Every script this page is made of, and whether it arrived.
+   *
+   * A console is thirty-odd files in a fixed order, and one of them missing
+   * takes the whole tool down before a single line of it has run: the IIFE
+   * throws, boot() is never called, and what you get is a blank page with an
+   * error only somebody who knows to open developer tools will ever see.
+   *
+   * That is exactly what a stale bundle looks like from the outside — and a
+   * stale bundle is not hypothetical. A console handed out on a USB stick sat
+   * six days behind the repository while the board beside it was current, and
+   * the only symptom was that things quietly did not happen.
+   *
+   * So the parts are named, checked, and the missing ones reported in words.
+   */
+  var PARTS = [
+    ['Geo', 'js/geo.js'], ['Fmt', 'js/format.js'], ['Store', 'js/store.js'],
+    ['Vessel', 'js/vessel.js'], ['Feed', 'js/feed.js'], ['FleetMap', 'js/map.js'],
+    ['FleetFilter', 'js/fleetfilter.js'], ['Passage', 'js/passage.js'],
+    ['Browse', 'js/browse.js'], ['Settings', 'js/settings.js'],
+    ['Photos', 'js/photos.js'], ['Profile', 'js/profile.js'],
+    ['Csv', 'js/csv.js'], ['Weather', 'js/weather.js']
+  ];
+
+  function partsLoaded() {
+    var missing = PARTS.filter(function (p) { return !window[p[0]]; });
+    if (!missing.length) return true;
+
+    document.body.innerHTML = '';
+    var box = document.createElement('div');
+    box.className = 'boot-error';
+    box.innerHTML =
+      '<h1>This console is missing ' +
+        (missing.length === 1 ? 'a file' : missing.length + ' files') + '</h1>' +
+      '<p>Nothing here can start without ' +
+        (missing.length === 1 ? 'it' : 'them') + ':</p>' +
+      '<pre>' + missing.map(function (p) { return p[1]; }).join('\n') + '</pre>' +
+      '<p>If this is a single downloaded file, it is an old one — build a new ' +
+      'one with <code>npm run build</code> and use <code>dist/fleet-console.html</code>. ' +
+      'If it is a folder or a server, the file did not load: check the network ' +
+      'tab, and hard-refresh in case an old copy is cached.</p>';
+    document.body.appendChild(box);
+    return false;
+  }
+
   function boot() {
+    if (!partsLoaded()) return;
     if (!fleetLoaded('the console')) return;
     BASE_FLEET = window.FLEET.slice();
     window.FLEET = window.Vessel.mergedFleet(BASE_FLEET);
@@ -184,14 +230,17 @@
    * with `dark`: the two differ in how they came about, which the vessel's own
    * record still says, and not at all in what the reader needs from a count.
    */
-  // Who is being looked at is one rule, shared by the rail and the chart, and
-  // it lives in js/fleetfilter.js so it can be tested without a browser.
-  var FILTERS = window.FleetFilter.FILTERS;
+  // Who is being looked at is one rule, shared by the rail, the chart and the
+  // overview list, and it lives in js/fleetfilter.js so it can be tested
+  // without a browser. Read when it is needed, never at load: a module that
+  // has not arrived must produce the message below, not a TypeError thrown
+  // before anything has had a chance to say so.
+  function filterChips() { return window.FleetFilter.FILTERS; }
 
   function renderFilters() {
     var host = el('filters');
     host.textContent = '';
-    FILTERS.forEach(function (f) {
+    filterChips().forEach(function (f) {
       var button = h('button', 'chip-filter');
       button.type = 'button';
       button.dataset.filter = f[0];
@@ -354,7 +403,20 @@
         : 'No vessel in this state.'));
     }
 
-    el('rail-foot').textContent = list.length + ' of ' + window.Store.vessels.length + ' vessels';
+    el('rail-foot').textContent = '';
+    el('rail-foot').appendChild(h('span', null,
+      list.length + ' of ' + window.Store.vessels.length + ' vessels'));
+    /**
+     * Which build this is, in the corner.
+     *
+     * A bundled console is a file somebody was handed, and there is no address
+     * bar to check and no way to tell one from another by looking. A week of
+     * work went missing from one and the only symptom was that things quietly
+     * did not happen — "it does not work on my tool" with nothing on the screen
+     * able to say why. Now there is.
+     */
+    el('rail-foot').appendChild(h('span', 'build-stamp',
+      window.CONFIG.buildStamp || 'from a folder'));
     renderFilters();
   }
 
