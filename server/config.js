@@ -31,8 +31,8 @@ function read(env) {
       pagesPerPoll: Number(e.VESSELAPI_PAGES_PER_POLL) || 4,
       backfillPages: Number(e.VESSELAPI_BACKFILL_PAGES) || 12,
       pageSize: Number(e.VESSELAPI_PAGE_SIZE) || 0,
-      pageParam: e.VESSELAPI_PAGE_PARAM || 'limit',
-      cursorParam: e.VESSELAPI_CURSOR_PARAM || 'nextToken'
+      pageParam: e.VESSELAPI_PAGE_PARAM || 'pagination.limit',
+      cursorParam: e.VESSELAPI_CURSOR_PARAM || 'pagination.nextToken'
     },
 
     aisStream: {
