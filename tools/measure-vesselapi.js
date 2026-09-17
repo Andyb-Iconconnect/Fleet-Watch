@@ -93,11 +93,26 @@ async function run() {
   MMSI_LIST.forEach(mmsi => { vesselReports[mmsi] = 0; });
 
   console.log('Starting measurements... (Ctrl+C to stop)');
-  console.log('Each poll = 1 API call\n');
+  console.log('PHASE 1: Fast backfill (every 30s for ~30 min)');
+  console.log('PHASE 2: Sustainable rate (switch to ~15 min after phase 1)');
+  console.log('Each poll = 1 API call. You have 150 total.\n');
 
   const startTime = Date.now();
+  const PHASE1_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+  let phase1Done = false;
+  let pollInterval = 30000; // Start at 30 seconds
 
   while (true) {
+    const elapsedMs = Date.now() - startTime;
+
+    // After 30 minutes, switch to 15-minute intervals
+    if (!phase1Done && elapsedMs > PHASE1_DURATION_MS) {
+      phase1Done = true;
+      pollInterval = 15 * 60 * 1000;
+      console.log(`\n>>> PHASE 1 COMPLETE <<<`);
+      console.log(`>>> Switching to 15-minute intervals for remaining calls <<<\n`);
+    }
+
     pollNumber++;
     totalCalls++;
 
@@ -176,8 +191,13 @@ async function run() {
         .join(', ') || 'none'}\n`);
     }
 
-    // Wait before next poll
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    // Warn if approaching call limit
+    if (totalCalls > 140) {
+      console.log(`⚠️  WARNING: Only ${150 - totalCalls} calls remaining!`);
+    }
+
+    // Wait before next poll (dynamic interval based on phase)
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
   }
 }
 

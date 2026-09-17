@@ -6,37 +6,58 @@ Your 150 free calls are enough to understand your fleet's reporting patterns. Us
 
 The Claude Code environment blocks external APIs. You need to run this on your laptop/desktop where you have unrestricted internet.
 
+**First 30 minutes:** Polls every 30 seconds (backfill phase)
+**Then 24+ hours:** Polls every 15 minutes (catch-up phase)
+
 ```bash
 cd Test-apps
 FEED_KEY=1e6fc8058ace527ed7af812520cd3050d6056229a87fd239a674f04027b176d7 node tools/measure-vesselapi.js
 ```
 
-It will poll VesselAPI every 3 seconds and log to `vesselapi-measurements.jsonl`:
+It will poll VesselAPI and log to `vesselapi-measurements.jsonl`:
 
 ```
 Poll #1 → 5/100 ours | 5/61 total | 🔴 56 missing | $0.01 | 245ms
 Poll #2 → 8/102 ours | 13/61 total | 🔴 48 missing | $0.02 | 187ms
 Poll #3 → 6/99 ours | 17/61 total | 🔴 44 missing | $0.03 | 201ms
+...
+Poll #30 → 2/95 ours | 47/61 total | 🔴 14 missing | $0.30 | 198ms
+
+>>> PHASE 1 COMPLETE <<<
+>>> Switching to 15-minute intervals for remaining calls <<<
+
+Poll #31 → 3/98 ours | 48/61 total | 🔴 13 missing | $0.31 | 212ms
+[polls continue every 15 minutes over next 24+ hours]
 ```
 
-**What's happening:** VesselAPI pages through reports, newest first. Each poll reaches a "cursor" where it stops; the next poll resumes from there. You'll see unique vessels accumulate until you catch all 61 (or determine some aren't in their system).
+**What's happening:** 
 
-## Step 2: Let it run until you have enough data
+*Phase 1 (backfill):* VesselAPI pages through historical reports, newest first. Each poll reaches a "cursor" where it stops; the next poll resumes from there. You accumulate unique vessels quickly.
 
-**Goal 1: Coverage** — Do all 61 vessels appear in VesselAPI?
-- Run for at least 2-4 hours to backfill the history
-- Once vessels stop appearing, they're likely all there (or not in VesselAPI)
+*Phase 2 (monitoring):* Cursor moves slowly (just new reports since last poll). You see how many vessels report within 15-minute windows. This reveals reporting frequency and helps you validate if all 61 are covered.
 
-**Goal 2: Cost baseline** — How many calls do you actually need?
-- After backfill (first hour), the cursor should stabilize
-- Count average calls per cycle to estimate daily cost
+## Step 2: Two-phase strategy (spreads 150 calls across 24+ hours)
 
-**Goal 3: Report frequency** — How often does your fleet report?
-- Vessels at anchor: every 3 minutes (broadcasts)
-- Vessels underway: every 3-30 seconds (AIS reports)
-- Offline vessels: never
+**PHASE 1: Fast backfill (30 calls in ~30 minutes)**
+- Polls every 30 seconds
+- Understands how fast VesselAPI's cursor moves
+- Reveals which vessels backfill quickly vs. are sparse
+- After 30 min, automatically switches to 15-minute intervals
 
-This varies by vessel. You need 24+ hours to see the pattern.
+**PHASE 2: Sustainable monitoring (120 calls over 30+ hours)**
+- Polls every 15 minutes (sustainable long-term rate)
+- Catches vessels that report infrequently
+- Spreads calls so you don't burn through 150 in an hour
+
+By the end:
+- You'll know if all 61 vessels appear
+- You'll understand backfill cost (expensive) vs. catch-up cost (cheap)
+- You'll have a real data model for your fleet
+
+Example timeline:
+- Minute 0-30: Phase 1 backfill (30 calls)
+- Minute 30-1470: Phase 2 monitoring (120 calls, 1 every 15 min)
+- Total: ~24.5 hours, 150 calls, all questions answered
 
 ## Step 3: Analyse the data
 
@@ -87,10 +108,11 @@ RECOMMENDATIONS:
 
 ## Spend tracking
 
-- 150 free calls gets you ~48 hours of polling every 3 seconds
-- Each poll = 1 call
-- Once caught up, re-polling costs much less (backfill is expensive)
-- After you know the pattern, switch to cheaper polling interval
+- 150 free calls strategy: 30 calls (30 min backfill) + 120 calls (24+ hours monitoring)
+- Phase 1 burns calls fast but reveals the full history and cursor speed
+- Phase 2 is sustainable long-term polling rate (15 min intervals)
+- Cost: ~$1.50 to answer all your questions
+- Each poll = 1 API call = $0.01
 
 ## Next step after analysis
 
