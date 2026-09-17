@@ -106,21 +106,27 @@ function create(cfg, store, log) {
 
   reader.start = function (mmsiList) {
     reader.stopped = false;
-    var run = function () {
-      if (reader.stopped) return;
-      poll(mmsiList).then(function (a) {
-        store.lastError = null;
-        log('myshiptracking: ' + a.applied + ' new fixes from ' + a.reports +
-          ' vessels | ' + a.creditsCharged + ' credits' +
-          (a.strangers.length ? ', ' + a.strangers.length + ' not ours' : ''));
-      }).catch(function (err) {
-        store.lastError = (err && err.message) || String(err);
-        log('myshiptracking: ' + store.lastError);
-      });
-    };
-    run();
-    reader.timer = setInterval(run, Math.max(30, c.pollSeconds) * 1000);
-    if (reader.timer.unref) reader.timer.unref();
+    // For MyShipTracking testing: don't auto-poll, only poll on demand via /api/refresh
+    // Set MYSHIPTRACKING_AUTO_POLL=1 to enable auto-polling
+    if (process.env.MYSHIPTRACKING_AUTO_POLL === '1') {
+      var run = function () {
+        if (reader.stopped) return;
+        poll(mmsiList).then(function (a) {
+          store.lastError = null;
+          log('myshiptracking: ' + a.applied + ' new fixes from ' + a.reports +
+            ' vessels | ' + a.creditsCharged + ' credits' +
+            (a.strangers.length ? ', ' + a.strangers.length + ' not ours' : ''));
+        }).catch(function (err) {
+          store.lastError = (err && err.message) || String(err);
+          log('myshiptracking: ' + store.lastError);
+        });
+      };
+      run();
+      reader.timer = setInterval(run, Math.max(30, c.pollSeconds) * 1000);
+      if (reader.timer.unref) reader.timer.unref();
+    } else {
+      log('myshiptracking: on-demand polling only. Use /api/refresh to fetch data.');
+    }
   };
 
   reader.stop = function () {

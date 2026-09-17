@@ -131,6 +131,18 @@ function create(ctx) {
       return json(res, ctx.problems().length ? 503 : 200, health(ctx));
     }
 
+    if (route === '/api/refresh') {
+      if (!ctx.reader) {
+        return json(res, 503, { error: 'no feed reader available' });
+      }
+      // Trigger a manual poll and return immediately with the fleet snapshot
+      var mmsiList = Object.keys(store.byMmsi);
+      ctx.reader.poll(mmsiList).catch(function (err) {
+        console.error('manual refresh error:', err.message);
+      });
+      return json(res, 200, { status: 'refreshing', fleet: store.snapshot(false) });
+    }
+
     if (route.indexOf('/api/') === 0) {
       return json(res, 404, { error: 'no such endpoint' });
     }

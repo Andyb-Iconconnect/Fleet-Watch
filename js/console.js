@@ -152,6 +152,7 @@
     el('clear-selection').addEventListener('click', function () { select(null); });
     el('chart-filter').addEventListener('click', clearNarrowing);
     el('discreet-toggle').addEventListener('click', toggleDiscreet);
+    el('refresh-button').addEventListener('click', refreshFleet);
     wireAddDialog();
     wirePhotoImport();
     wireSheetImport();
@@ -1063,6 +1064,29 @@
     renderRail(true);
     renderWork(true);
     renderReadout();
+  }
+
+  function refreshFleet() {
+    var button = el('refresh-button');
+    button.disabled = true;
+    button.textContent = '🔄 Refreshing...';
+
+    fetch('/api/refresh')
+      .then(function (res) { return res.json(); })
+      .then(function (data) {
+        button.textContent = '🔄 Refresh';
+        button.disabled = false;
+        // Fleet data is already updated on the server, just recompute to pick it up
+        window.Store.recompute();
+        renderRail(true);
+        renderWork(true);
+        renderReadout();
+      })
+      .catch(function (err) {
+        button.textContent = '🔄 Refresh (error)';
+        button.disabled = false;
+        console.error('refresh failed:', err);
+      });
   }
 
   /* --- Adding a vessel ----------------------------------------------------- */
