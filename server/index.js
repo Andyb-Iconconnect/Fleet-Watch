@@ -112,6 +112,8 @@ async function begin(ctx, fleet) {
   const mmsis = fleet.map(function (y) { return String(y.mmsi); });
   const provider = cfg.provider === 'aisstream'
     ? require('./providers/aisstream.js')
+    : cfg.provider === 'myshiptracking'
+    ? require('./providers/myshiptracking.js')
     : require('./providers/vesselapi.js');
 
   ctx.reader = provider.create(cfg, ctx.store, log);

@@ -39,6 +39,12 @@ function read(env) {
       endpoint: e.AISSTREAM_ENDPOINT || 'wss://stream.aisstream.io/v0/stream'
     },
 
+    myShipTracking: {
+      endpoint: e.MYSHIPTRACKING_ENDPOINT ||
+        'https://api.myshiptracking.com/api/v2/vessel/bulk',
+      pollSeconds: Number(e.MYSHIPTRACKING_POLL_SECONDS) || 900
+    },
+
     /**
      * Where the snapshot is kept so a restart does not blank the board.
      *
@@ -116,10 +122,10 @@ function read(env) {
 function problems(cfg) {
   var out = [];
   if (!cfg.provider) {
-    out.push('FEED_PROVIDER is not set. Set it to "vesselapi" or "aisstream".');
-  } else if (['vesselapi', 'aisstream'].indexOf(cfg.provider) === -1) {
+    out.push('FEED_PROVIDER is not set. Set it to "vesselapi", "aisstream", or "myshiptracking".');
+  } else if (['vesselapi', 'aisstream', 'myshiptracking'].indexOf(cfg.provider) === -1) {
     out.push('FEED_PROVIDER is "' + cfg.provider + '", which is not a provider ' +
-      'this relay has. Set "vesselapi" or "aisstream".');
+      'this relay has. Set "vesselapi", "aisstream", or "myshiptracking".');
   }
   if (!cfg.key) {
     out.push('FEED_KEY is not set, so there is no feed. Add it as an App ' +
