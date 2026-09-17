@@ -28,7 +28,7 @@ if (!API_KEY) {
   process.exit(1);
 }
 
-const MMSI_LIST = Object.keys(FLEET).map(k => FLEET[k].mmsi).filter(Boolean);
+const MMSI_LIST = Object.keys(FLEET).map(k => String(FLEET[k].mmsi)).filter(Boolean);
 console.log(`Tracking ${MMSI_LIST.length} vessels`);
 console.log(`Fleet MMSIs: ${MMSI_LIST.join(', ')}`);
 console.log('');
