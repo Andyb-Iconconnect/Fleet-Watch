@@ -17,7 +17,8 @@ if (fs.existsSync(envPath)) {
 }
 
 try {
-  require('./index.js');
+  const indexFile = require('./index.js');
+  indexFile.start(process.env);
 } catch (e) {
   console.error('FATAL ERROR:', e.message);
   console.error(e.stack);
