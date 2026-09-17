@@ -6,6 +6,7 @@
   "main": "server/index.js",
   "scripts": {
     "start": "node server/index.js",
+    "dev": "node server/dev-start.js",
     "test": "node tools/test.js",
     "build": "node tools/build-all.js",
     "check-sql": "node server/check-sql.js",
