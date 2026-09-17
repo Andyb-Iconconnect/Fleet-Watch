@@ -43,10 +43,11 @@ async function poll(token) {
   const endpoint = 'https://api.vesselapi.com/v1/vessels/positions';
   const params = [
     'filter.idType=mmsi',
-    'filter.ids=' + encodeURIComponent(MMSI_LIST.join(','))
+    'filter.ids=' + encodeURIComponent(MMSI_LIST.join(',')),
+    'pagination.limit=50'
   ];
   if (token) {
-    params.push('nextToken=' + encodeURIComponent(token));
+    params.push('pagination.nextToken=' + encodeURIComponent(token));
   }
   const url = endpoint + '?' + params.join('&');
 
