@@ -1,0 +1,22 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server/index.js"
+    }
+  ],
+  "env": {
+    "FEED_PROVIDER": "myshiptracking",
+    "FEED_KEY": "@myshiptracking_key",
+    "FEED_SECRET": "@myshiptracking_secret",
+    "SUPABASE_URL": "@supabase_url",
+    "SUPABASE_KEY": "@supabase_key"
+  }
+}
