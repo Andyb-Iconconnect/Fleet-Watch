@@ -17,10 +17,19 @@ if (fs.existsSync(envPath)) {
 }
 
 try {
+  console.log('Loading index.js...');
   const indexFile = require('./index.js');
-  indexFile.start(process.env);
+  console.log('Calling start()...');
+  const ctx = indexFile.start(process.env);
+  console.log('start() returned, server should be running');
 } catch (e) {
   console.error('FATAL ERROR:', e.message);
   console.error(e.stack);
   process.exit(1);
 }
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught Exception:', err);
+  process.exit(1);
+});
