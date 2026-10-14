@@ -33,7 +33,15 @@ function loadFleet() {
   return global.window.FLEET;
 }
 
-function start(env) {
+/**
+ * The relay, assembled but not listening and not reading anything yet.
+ *
+ * Separate from start() because there are two ways to run it. On Azure — or
+ * on a laptop — start() listens on a port and reads the feeds on timers. On
+ * Vercel there is no port and no timer worth having: server/vercel.js takes
+ * this, and Vercel hands it one request at a time.
+ */
+function create(env) {
   const cfg = configFile.read(env);
   const fleet = loadFleet();
   const store = storeFile.create(fleet, {
@@ -44,21 +52,35 @@ function start(env) {
   const db = sqlFile.create(cfg, log);
   const history = historyFile.create(cfg, db, log);
 
+  const domotz = require('./domotz.js').create(cfg, fleet, log);
+
   const ctx = {
     config: cfg, store: store, blob: blob, db: db, history: history,
-    reader: null,
+    reader: null, domotz: domotz,
     problems: function () { return configFile.problems(cfg); }
   };
 
-  const app = require('./app.js').create(ctx);
+  ctx.app = require('./app.js').create(ctx);
+  ctx.fleet = fleet;
+  return ctx;
+}
 
-  app.server.listen(cfg.port, function () {
+function start(env) {
+  const ctx = create(env);
+  const cfg = ctx.config, store = ctx.store, domotz = ctx.domotz;
+
+  ctx.app.server.listen(cfg.port, function () {
     log('relay listening on ' + cfg.port +
       (cfg.instanceId ? '  instance ' + cfg.instanceId.slice(0, 8) : ''));
     ctx.problems().forEach(function (p) { log('CONFIGURATION: ' + p); });
   });
 
-  begin(ctx, fleet).catch(function (err) {
+  // Before the position feed, and whatever becomes of it: network health is
+  // worth having on a board whose AIS key has not been set yet.
+  if (domotz.enabled) domotz.start();
+  else log('no DOMOTZ_API_KEY, so no network health on the board');
+
+  begin(ctx, ctx.fleet).catch(function (err) {
     log('the feed did not start: ' + ((err && err.message) || err));
     store.lastError = (err && err.message) || String(err);
   });
@@ -117,7 +139,16 @@ async function begin(ctx, fleet) {
     : require('./providers/vesselapi.js');
 
   ctx.reader = provider.create(cfg, ctx.store, log);
-  ctx.reader.start(mmsis);
+  /**
+   * On Vercel a polled provider is not started: its timer would only fire
+   * while some request happened to be running, and could then poll alongside
+   * the on-demand read in app.js and pay for the same positions twice. The
+   * screens are its clock there instead. AISstream has nothing to poll — it
+   * is a socket — so it is started either way and streams while it can.
+   */
+  if (!(ctx.onDemand && typeof ctx.reader.poll === 'function')) {
+    ctx.reader.start(mmsis);
+  }
 
   if (ctx.blob.enabled()) {
     const save = setInterval(function () {
@@ -178,6 +209,6 @@ async function begin(ctx, fleet) {
   });
 }
 
-module.exports = { start: start };
+module.exports = { start: start, create: create, begin: begin, log: log };
 
 if (require.main === module) start(process.env);

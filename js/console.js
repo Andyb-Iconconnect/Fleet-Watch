@@ -90,7 +90,7 @@
     ['FleetFilter', 'js/fleetfilter.js'], ['Passage', 'js/passage.js'],
     ['Browse', 'js/browse.js'], ['Settings', 'js/settings.js'],
     ['Photos', 'js/photos.js'], ['Profile', 'js/profile.js'],
-    ['Csv', 'js/csv.js'], ['Weather', 'js/weather.js']
+    ['Csv', 'js/csv.js'], ['Weather', 'js/weather.js'], ['Faults', 'js/faults.js']
   ];
 
   function partsLoaded() {
@@ -132,6 +132,7 @@
     window.Settings.onChange(restartFeed);
     startFeed();
     window.Weather.start();
+    window.Faults.start(function () { renderWork(true); });
 
     // Asked once. Until it answers the passage panel is absent rather than
     // present and broken, which is the right way round: most of the time the
@@ -390,6 +391,7 @@
       var nameCell = h('span', 'v-name', v.yacht.name);
       if (v.yacht.sentinel) nameCell.appendChild(sentinelPip());
       if (v.yacht.addedLocally) nameCell.appendChild(h('span', 'local-dot'));
+      if (v.derived.fault && v.derived.fault !== 'ok') nameCell.appendChild(faultPip(v.derived.fault));
       row.appendChild(nameCell);
 
       row.appendChild(h('span', 'v-where', whereText(v)));
@@ -419,6 +421,13 @@
     el('rail-foot').appendChild(h('span', 'build-stamp',
       window.CONFIG.buildStamp || 'from a folder'));
     renderFilters();
+  }
+
+  function faultPip(state) {
+    var pip = h('span', 'fault-pip ' + state);
+    pip.title = state === 'fault' ? 'Domotz: something on board is down'
+                                  : 'Domotz: the collector on board cannot be reached';
+    return pip;
   }
 
   function whereText(v) {
@@ -500,6 +509,16 @@
         'listening ' + window.Fmt.duration(r.since) +
         (r.settling ? ' · still assembling' : ''), ''));
     }
+    // Only once Domotz has said something. A tile reading "0 faults" on a
+    // console with no key would be reassurance nobody has earned.
+    var net = summary.network;
+    if (net && net.known) {
+      var faulty = net.fault + net.unreachable;
+      tiles.appendChild(tile('Network faults', faulty,
+        net.unreachable ? net.unreachable + ' unreachable · ' + net.known + ' watched'
+                        : 'of ' + net.known + ' watched by Domotz',
+        faulty ? 'warn' : ''));
+    }
     host.appendChild(tiles);
 
     /**
@@ -553,6 +572,7 @@
       chip.appendChild(swatch);
       chip.appendChild(h('span', null, window.Fmt.statusLabel(d.status)));
       row.appendChild(chip);
+      if (d.fault && d.fault !== 'ok') main.appendChild(faultPip(d.fault));
 
       var sub = whereText(v);
       if (d.fromOffice != null) {
@@ -667,6 +687,8 @@
     if (window.Passage.availability && window.Passage.availability.ok && !d.discreet) {
       host.appendChild(passagePanel(v));
     }
+
+    if (window.Faults.available) host.appendChild(networkPanel(v));
 
     if (y.addedLocally) {
       var localPanel = h('div', 'panel');
@@ -855,6 +877,51 @@
   // Label first, value second. The other way round — value large on the left
   // with the field name as a chip on the right — reads as a tag on a thing
   // rather than as a field, and you cannot scan a column of them.
+  /**
+   * What Domotz says is down on board, by name.
+   *
+   * Here and only here: the board draws a mark, and the list behind it stays
+   * on the desk. A yacht Domotz has no collector for says so, rather than
+   * reading as a clean bill of health.
+   */
+  function networkPanel(v) {
+    var panel = h('div', 'panel');
+    panel.appendChild(h('div', 'pane-title', 'Network on board'));
+    var rows = h('div', 'rows');
+    var entry = window.Faults.forVessel(v.yacht.mmsi);
+    var state = v.derived.fault;
+    var detail = window.Faults.detail || {};
+
+    if (detail.demo) {
+      panel.appendChild(h('div', 'sheet-note',
+        'Demo mode: invented faults, so this panel can be seen before Domotz is connected.'));
+    }
+
+    if (!entry) {
+      rows.appendChild(h('div', 'empty',
+        'No Domotz collector is matched to this vessel. Name the collector after ' +
+        'her, or set domotzAgent on her entry in fleet.js.'));
+    } else if (!state) {
+      rows.appendChild(h('div', 'empty', 'No recent reading from Domotz.'));
+    } else if (state === 'unreachable') {
+      rows.appendChild(kvRow('Collector', 'Offline',
+        'Domotz cannot see her network — usually her internet connection is down'));
+    } else if (!entry.devices || !entry.devices.length) {
+      rows.appendChild(kvRow('Status', 'All watched devices up', null));
+    } else {
+      entry.devices.forEach(function (dev) {
+        rows.appendChild(kvRow(dev.name, 'Down',
+          [dev.type, dev.since ? 'went down ' + window.Fmt.age(new Date(dev.since)) : null]
+            .filter(Boolean).join(' · ') || null));
+      });
+    }
+    if (detail.checkedAt) {
+      rows.appendChild(kvRow('Checked', window.Fmt.age(new Date(detail.checkedAt)), null));
+    }
+    panel.appendChild(rows);
+    return panel;
+  }
+
   function kvRow(key, value, sub) {
     var row = h('div', 'field');
     row.appendChild(h('div', 'f-key', key));

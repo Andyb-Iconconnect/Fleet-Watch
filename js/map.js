@@ -140,6 +140,8 @@
       siteHq: v('--map-site-hq', '#3CB4E4'),
       siteYard: v('--map-site-yard', '#6FCBEA'),
       sentinel: v('--sentinel', '#D4A64A'),
+      fault: v('--critical', '#d03b3b'),
+      unreachable: v('--warning', '#fab219'),
       clusterFill: v('--map-cluster', 'rgba(16, 32, 48, 0.92)'),
       clusterRing: v('--map-cluster-ring', 'rgba(139, 152, 168, 0.85)'),
       passage: v('--map-passage', 'rgba(234, 242, 248, 0.50)'),
@@ -1717,7 +1719,40 @@
       }
 
       if (isHighlight) drawHighlightRing(p.x, p.y, p.color, now);
+      drawFaultPip(p.x, p.y, d, isHighlight);
     });
+  }
+
+  /**
+   * A small mark at her shoulder when Domotz says something on board is down.
+   *
+   * Beside the marker rather than recolouring it: her status colour still
+   * says underway or moored, and this adds one fact without taking one away.
+   * Red for a fault, a hollow amber ring when the collector cannot be reached.
+   * Never on a discreet yacht — her area is a deliberate vagueness and a mark
+   * pinned to it would read as a position.
+   */
+  function drawFaultPip(x, y, d, big) {
+    if (!d.fault || d.fault === 'ok' || d.discreet) return;
+    var faults = window.CONFIG.faults;
+    if (faults && faults.showOnBoard === false) return;
+    var off = big ? 10 : 8;
+    var px = x + off, py = y - off;
+    ctx.beginPath();
+    ctx.arc(px, py, 3.6, 0, Math.PI * 2);
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = theme.oceanDeep;
+    ctx.stroke();
+    if (d.fault === 'fault') {
+      ctx.fillStyle = theme.fault;
+      ctx.fill();
+    } else {
+      ctx.fillStyle = theme.oceanDeep;
+      ctx.fill();
+      ctx.lineWidth = 1.6;
+      ctx.strokeStyle = theme.unreachable;
+      ctx.stroke();
+    }
   }
 
   function rank(status) {

@@ -45,6 +45,28 @@ function read(env) {
       pollSeconds: Number(e.MYSHIPTRACKING_POLL_SECONDS) || 900
     },
 
+    // On Vercel, how long a screen's request may wait for a position read that
+    // is due before it is answered with what the relay already holds.
+    onDemandWaitMs: Number(e.ON_DEMAND_WAIT_MS) || 7000,
+
+    /**
+     * Network health on board, from Domotz. Optional and separate from the
+     * position feed: no DOMOTZ_API_KEY and the relay behaves exactly as it did.
+     *
+     * Every ten minutes by default. A fault that has lasted ten minutes is
+     * still news, and sixty collectors every few seconds is how an API key
+     * gets rate-limited.
+     */
+    domotz: {
+      key: (e.DOMOTZ_API_KEY || '').trim() || null,
+      endpoint: (e.DOMOTZ_ENDPOINT || '').trim() ||
+        'https://api-eu-west-1-cell-1.domotz.com/public-api/v1',
+      pollSeconds: Number(e.DOMOTZ_POLL_SECONDS) || 600,
+      // How long a screen's request may wait on a Domotz read that is due.
+      // Under Vercel's ten-second limit, with room for the rest of the answer.
+      maxWaitMs: Number(e.DOMOTZ_MAX_WAIT_MS) || 7000
+    },
+
     /**
      * Where the snapshot is kept so a restart does not blank the board.
      *

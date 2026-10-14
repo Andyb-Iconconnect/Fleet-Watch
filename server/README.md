@@ -107,6 +107,37 @@ account, and with a blob-scoped SAS it cannot.
 | `TRACK_POINTS` | `240` | Positions kept per yacht for the trail on the chart |
 | `ALLOW_MULTIPLE_READERS` | unset | Permits more than one instance to read the feed |
 
+**Network health from Domotz (optional)**
+
+| Setting | Default | What it does |
+|---|---|---|
+| `DOMOTZ_API_KEY` | unset | A Domotz Public API key. Unset, the relay does exactly what it did before |
+| `DOMOTZ_ENDPOINT` | `https://api-eu-west-1-cell-1.domotz.com/public-api/v1` | The API address shown beside the key in the Domotz portal |
+| `DOMOTZ_POLL_SECONDS` | `600` | How often to read Domotz. Every collector is a request, so keep this modest |
+| `DOMOTZ_MAX_WAIT_MS` | `7000` | How long a screen's request may wait for a Domotz read that is due |
+
+On a server that stays up (Azure) Domotz is read on a timer. On Vercel nothing
+runs between requests, so the relay also reads it when a screen asks for the
+fleet and the last read is older than `DOMOTZ_POLL_SECONDS` — one read however
+many screens ask, and never holding up the positions longer than
+`DOMOTZ_MAX_WAIT_MS`. After a cold start the first screen may get its positions
+before the first Domotz reading; the next poll carries it.
+
+With a key set, the relay reads every Domotz collector and, for each one that is
+online, its devices. A yacht is **fault** when a device is DOWN or an important
+(VITAL) device is offline, and **unreachable** when her collector is offline —
+usually meaning her internet is down. A guest's phone leaving the network is
+neither.
+
+Collectors are matched to yachts by name, as whole words: "M/Y Alaiya – Bridge"
+is Alaiya, "Aresto" is not Ares. Where that will not work, set `domotzAgent` on
+the yacht in `fleet.js` to the collector's id or exact name. Collectors nobody
+could place are listed under `domotz` on `/api/health`.
+
+The board receives only a state per yacht and draws a small mark — red for a
+fault, a hollow amber ring for unreachable — and never on a discreet yacht.
+Device names are served only on `/api/faults`, which only the console asks for.
+
 VesselAPI answers with a *stream* of position reports rather than a snapshot of
 where everyone is, so the reader keeps a watermark and reads only what is new.
 That means **the bill follows how much the fleet talks, not how often we
@@ -114,6 +145,38 @@ look**: polling every three minutes costs very nearly what polling every thirty
 would. Page size is the one real lever — at the rate the fleet was observed
 talking, 20 reports a page is about 10,000 requests a month and 200 a page is
 about 1,000.
+
+---
+
+## On Vercel instead
+
+`vercel.json` points Vercel at **`server/vercel.js`**, not `server/index.js`.
+Vercel calls a function once per request rather than running a server, so
+`index.js` — which listens on a port — would never answer anything there.
+`vercel.js` assembles the relay once per warm instance and hands it each
+request. The board's own files are bundled with it through `includeFiles`.
+
+Set the same settings under Project → Settings → Environment Variables.
+
+What is different from Azure: nothing runs between requests, so on Vercel the
+screens are the clock. When one asks for the fleet:
+
+- **Positions** are read if the last read is older than the provider's own
+  interval (`MYSHIPTRACKING_POLL_SECONDS`, default 900; `VESSELAPI_POLL_SECONDS`,
+  default 180). The provider's background timer is not started there, so the
+  two can never both pay for the same positions. AISstream is a socket rather
+  than a poll and is unaffected.
+- **Domotz** is read the same way, by `DOMOTZ_POLL_SECONDS` (above).
+
+Both run side by side, every screen arriving meanwhile shares the one read,
+and neither holds an answer up for longer than `ON_DEMAND_WAIT_MS` (default
+7000). A provider that is failing is asked once per interval, not once per
+screen.
+
+**On a metered provider, each warm Vercel instance reads on its own**, and a
+cold one reads straight away. Vercel usually keeps one instance for a handful of
+screens, but it decides, not us. Set `SNAPSHOT_BLOB_SAS_URL` so a cold instance
+starts from the last snapshot rather than from nothing.
 
 ---
 

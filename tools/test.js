@@ -6255,7 +6255,7 @@ test('every page a bundle is made from loads every script it needs', () => {
                   'marinetraffic.js', 'relay.js', 'vesselapi.js'];
   const BOARD_ONLY = ['app.js', 'views.js'];
   const CONSOLE_ONLY = ['console.js', 'browse.js', 'csv.js', 'fleetfilter.js',
-                        'passage.js'];
+                        'passage.js', 'faults.js'];
 
   const onDisk = fs.readdirSync(path.join(__dirname, '..', 'js'))
     .filter((f) => f.endsWith('.js')).sort();
@@ -6311,6 +6311,287 @@ test('a console missing a file says which one, rather than nothing at all', () =
   const preamble = src.slice(0, src.indexOf('function boot()'));
   assert.ok(!/^\s*var \w+ = window\.[A-Z]\w*\./m.test(preamble),
     'no module is read at load time');
+});
+
+/* --- Domotz: network health on board --------------------------------------- */
+
+test('Domotz collectors are matched to yachts by whole words, never guessed', () => {
+  const domotz = require('../server/domotz.js');
+  const fleet = [
+    { name: 'Ares', mmsi: 319000001 },
+    { name: 'Alaiya', mmsi: 319000002 },
+    { name: 'Lady Jo', mmsi: 319000003 },
+    { name: 'Jo', mmsi: 319000004, domotzAgent: 77 }
+  ];
+  const m = domotz.match(fleet, [
+    { id: 1, display_name: 'M/Y Alaiya - Bridge' },
+    { id: 2, display_name: 'Aresto' },             // not Ares
+    { id: 3, display_name: 'LADY JO' },
+    { id: 77, display_name: 'Something else' },    // pinned by id
+    { id: 4, display_name: 'Ares & Alaiya shared' } // two yachts: used for neither
+  ]);
+  assert.strictEqual(m.byAgent[1].mmsi, '319000002');
+  assert.ok(!m.byAgent[2], 'Aresto is not Ares');
+  assert.strictEqual(m.byAgent[3].mmsi, '319000003',
+    'Jo is pinned to a collector, so is never guessed onto "Lady Jo"');
+  assert.strictEqual(m.byAgent[77].mmsi, '319000004');
+  assert.ok(!m.byAgent[4]);
+  assert.deepStrictEqual(m.ambiguous, ['Ares & Alaiya shared']);
+  assert.deepStrictEqual(m.unmatched, ['Aresto']);
+});
+
+test('only important devices count as a Domotz fault', () => {
+  const { isFault } = require('../server/domotz.js');
+  assert.ok(isFault({ status: 'DOWN' }));
+  assert.ok(isFault({ status: 'OFFLINE', importance: 'VITAL' }));
+  assert.ok(!isFault({ status: 'OFFLINE', importance: 'FLOATING' }), 'a guest phone leaving');
+  assert.ok(!isFault({ status: 'ONLINE', importance: 'VITAL' }));
+});
+
+testAsync('the Domotz reader turns collectors and devices into a state per yacht', async () => {
+  const domotz = require('../server/domotz.js');
+  const fleet = [
+    { name: 'Alaiya', mmsi: 319000002 },
+    { name: 'Ares', mmsi: 319000001 },
+    { name: 'Anawa', mmsi: 310799000 }
+  ];
+  const seen = [];
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url, opts) => {
+    seen.push({ url, key: opts.headers['X-Api-Key'] });
+    if (/\/agent\?/.test(url)) {
+      return reply([
+        { id: 10, display_name: 'Alaiya', status: { value: 'ONLINE' } },
+        { id: 11, display_name: 'Ares', status: { value: 'OFFLINE' } },
+        { id: 12, display_name: 'Anawa', status: { value: 'ONLINE' } }
+      ]);
+    }
+    if (/\/agent\/10\/device$/.test(url)) {
+      return reply([
+        { display_name: 'VSAT', status: 'DOWN', type: { label: 'Satellite' },
+          last_status_change: '2026-10-14T08:00:00Z' },
+        { display_name: 'Guest phone', status: 'OFFLINE', importance: 'FLOATING' }
+      ]);
+    }
+    if (/\/agent\/12\/device$/.test(url)) return reply([{ display_name: 'Switch', status: 'ONLINE' }]);
+    throw new Error('unexpected ' + url);
+  };
+  const cfg = { domotz: { key: 'test-key', endpoint: 'https://domotz.test/v1/', pollSeconds: 600 } };
+  const r = domotz.create(cfg, fleet, () => {}, fake);
+  await r.poll();
+
+  assert.ok(seen.every((s) => s.key === 'test-key'));
+  assert.ok(!seen.some((s) => /\/agent\/11\//.test(s.url)), 'an offline collector is not asked for devices');
+  assert.strictEqual(r.byMmsi['319000002'].state, 'fault');
+  assert.deepStrictEqual(r.byMmsi['319000002'].devices.map((d) => d.name), ['VSAT']);
+  assert.strictEqual(r.byMmsi['319000001'].state, 'unreachable');
+  assert.strictEqual(r.byMmsi['310799000'].state, 'ok');
+
+  // What every screen gets carries no device names.
+  const board = r.board();
+  assert.deepStrictEqual(board.vessels['319000002'], { state: 'fault', down: 1 });
+  assert.ok(!/VSAT/.test(JSON.stringify(board)), 'device names stay off the board');
+});
+
+testAsync('on Vercel, Domotz is read when a screen asks and a read is due — once', async () => {
+  const domotz = require('../server/domotz.js');
+  let agentCalls = 0;
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url) => {
+    if (/\/agent\?/.test(url)) {
+      agentCalls++;
+      return reply([{ id: 1, display_name: 'Alaiya', status: { value: 'ONLINE' } }]);
+    }
+    return reply([]);
+  };
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600 } };
+  const r = domotz.create(cfg, [{ name: 'Alaiya', mmsi: 319000002 }], () => {}, fake);
+
+  // Two screens arriving together share one read.
+  await Promise.all([r.refreshIfDue(1000), r.refreshIfDue(1000)]);
+  assert.strictEqual(agentCalls, 1);
+  assert.strictEqual(r.byMmsi['319000002'].state, 'ok');
+
+  // Inside the interval, nothing is asked.
+  await r.refreshIfDue(1000);
+  assert.strictEqual(agentCalls, 1);
+
+  // Past it, it is.
+  r.lastAttemptAt = new Date(Date.now() - 601000);
+  await r.refreshIfDue(1000);
+  assert.strictEqual(agentCalls, 2);
+});
+
+testAsync('a slow Domotz never holds up the positions', async () => {
+  const domotz = require('../server/domotz.js');
+  const fake = () => new Promise(() => {});      // never answers
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600 } };
+  const r = domotz.create(cfg, [], () => {}, fake);
+  const t0 = Date.now();
+  await r.refreshIfDue(50);
+  assert.ok(Date.now() - t0 < 1000, 'gave up waiting after the cap');
+  assert.strictEqual(r.board(), null, 'and reports nothing rather than an invented "ok"');
+});
+
+testAsync('/api/fleet waits for a due Domotz read and carries its states', async () => {
+  const domotz = require('../server/domotz.js');
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url) => /\/agent\?/.test(url)
+    ? reply([{ id: 1, display_name: 'Alaiya', status: { value: 'OFFLINE' } }])
+    : reply([]);
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600, maxWaitMs: 2000 } };
+  const fleet = [{ name: 'Alaiya', mmsi: 319000002 }];
+  const store = require('../server/store.js').create(fleet, {});
+  const app = require('../server/app.js').create({
+    config: cfg, store: store, domotz: domotz.create(cfg, fleet, () => {}, fake),
+    problems: () => []
+  });
+  const body = await new Promise((resolve) => {
+    const res = {
+      writeHead() {},
+      end(text) { resolve(JSON.parse(text)); }
+    };
+    app.handle({ url: '/api/fleet' }, res);
+  });
+  assert.deepStrictEqual(body.faults.vessels['319000002'], { state: 'unreachable', down: 0 });
+});
+
+testAsync('the Vercel entry answers requests without listening on a port of its own', async () => {
+  /**
+   * vercel.json once pointed at server/index.js, which exports start() and
+   * listens on a port — not the request handler Vercel calls. Every request
+   * would have failed. This runs the handler the way Vercel does, behind a
+   * plain http server, and asks it for the board, the fleet and its health.
+   */
+  const handler = require('../server/vercel.js');
+  assert.strictEqual(typeof handler, 'function', 'Vercel needs a function');
+
+  const http = require('http');
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    const page = await fetch(base + '/');
+    assert.strictEqual(page.status, 200);
+    assert.ok(/<html/i.test(await page.text()), 'the board itself is served');
+
+    const fleet = await fetch(base + '/api/fleet');
+    assert.strictEqual(fleet.status, 200);
+    assert.ok(Array.isArray((await fleet.json()).vessels));
+
+    const health = await fetch(base + '/api/health');
+    assert.ok('domotz' in await health.json());
+
+    assert.strictEqual((await fetch(base + '/package.json')).status, 404,
+      'and still nothing outside the board');
+  } finally {
+    server.close();
+  }
+
+  const cfg = JSON.parse(readRepo('vercel.json'));
+  assert.strictEqual(cfg.builds[0].src, 'server/vercel.js');
+  assert.ok(cfg.routes.every((r) => r.dest === 'server/vercel.js'));
+  ['index.html', 'console.html', 'fleet.js', 'config.js', 'js/**', 'css/**', 'data/**', 'assets/**']
+    .forEach((f) => assert.ok(cfg.builds[0].config.includeFiles.indexOf(f) !== -1,
+      f + ' is bundled, or the function has no board to serve'));
+});
+
+testAsync('on Vercel, positions are read when a screen asks and a read is due — once', async () => {
+  const fleet = [{ name: 'Alaiya', mmsi: 319000002 }];
+  const store = require('../server/store.js').create(fleet, {});
+  let polls = 0, release;
+  const reader = {
+    poll(list) {
+      polls++;
+      assert.deepStrictEqual(list, ['319000002'], 'asked about our own fleet');
+      return new Promise((resolve) => { release = resolve; }).then(() => {
+        store.applyFix('319000002', { lat: 43.7, lon: 7.4, at: new Date() });
+        return { applied: 1 };
+      });
+    },
+    start() { throw new Error('a polled provider is never started on Vercel'); }
+  };
+  const cfg = { provider: 'myshiptracking', myShipTracking: { pollSeconds: 900 },
+                onDemandWaitMs: 2000 };
+  const ctx = { config: cfg, store: store, reader: reader, onDemand: true, problems: () => [] };
+  const app = require('../server/app.js').create(ctx);
+  const ask = () => new Promise((resolve) => {
+    app.handle({ url: '/api/fleet' }, { writeHead() {}, end(t) { resolve(JSON.parse(t)); } });
+  });
+
+  // Two screens at once: one read, and both get its positions.
+  const both = Promise.all([ask(), ask()]);
+  await new Promise((r) => setTimeout(r, 0));
+  release();
+  const [a, b] = await both;
+  assert.strictEqual(polls, 1);
+  assert.strictEqual(a.vessels.length, 1);
+  assert.strictEqual(b.vessels.length, 1);
+
+  // Inside the provider's interval, nothing more is bought.
+  await ask();
+  assert.strictEqual(polls, 1);
+
+  // A server that stays up never does this: its timer is the clock.
+  const steady = require('../server/app.js').create(Object.assign({}, ctx, { onDemand: false }));
+  await new Promise((resolve) => {
+    steady.handle({ url: '/api/fleet' }, { writeHead() {}, end: resolve });
+  });
+  assert.strictEqual(polls, 1);
+});
+
+testAsync('a provider that never answers does not hold up the board on Vercel', async () => {
+  const store = require('../server/store.js').create([{ name: 'A', mmsi: 319000002 }], {});
+  const ctx = {
+    config: { provider: 'vesselapi', vesselApi: { pollSeconds: 180 }, onDemandWaitMs: 50 },
+    store: store, reader: { poll: () => new Promise(() => {}) }, onDemand: true,
+    problems: () => []
+  };
+  const app = require('../server/app.js').create(ctx);
+  const t0 = Date.now();
+  const body = await new Promise((resolve) => {
+    app.handle({ url: '/api/fleet' }, { writeHead() {}, end(t) { resolve(JSON.parse(t)); } });
+  });
+  assert.ok(Date.now() - t0 < 1000);
+  assert.deepStrictEqual(body.vessels, []);
+});
+
+test('the Vercel entry asks for positions on demand, and only it does', () => {
+  assert.ok(/ctx\.onDemand = true/.test(readRepo('server/vercel.js')));
+  assert.ok(!/onDemand = true/.test(readRepo('server/index.js')));
+  assert.ok(/if \(!\(ctx\.onDemand && typeof ctx\.reader\.poll === 'function'\)\)/
+    .test(readRepo('server/index.js')), 'a polled provider is not started on Vercel');
+});
+
+test('the board takes Domotz states from the relay and drops a stale one', () => {
+  Store.mode = 'demo';
+  Store.init(FLEET);
+  const a = Store.vessels[0], b = Store.vessels[1];
+  Store.applyFaults({
+    checkedAt: new Date().toISOString(),
+    vessels: { [String(a.yacht.mmsi)]: { state: 'fault', down: 2 } }
+  });
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, 'fault');
+  assert.strictEqual(b.derived.fault, null, 'no reading is not "ok"');
+  assert.strictEqual(Store.summary().network.fault, 1);
+
+  Store.applyFaults({
+    checkedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
+    vessels: { [String(a.yacht.mmsi)]: { state: 'fault', down: 2 } }
+  });
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, null, 'two hours old is not shown');
+
+  Store.applyFaults(null);
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, null);
+});
+
+test('the console fetches the fault list; the board never does', () => {
+  assert.ok(/js\/faults\.js/.test(readRepo('console.html')));
+  assert.ok(!/js\/faults\.js/.test(readRepo('index.html')));
+  assert.ok(!/api\/faults/.test(readRepo('js/relay.js')));
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

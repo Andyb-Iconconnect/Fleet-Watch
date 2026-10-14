@@ -57,6 +57,68 @@ function create(ctx) {
     res.end(text);
   }
 
+  /**
+   * A Domotz read when one is due, capped so a slow Domotz never holds up the
+   * positions. Never rejects: network health is extra, and a screen must get
+   * its fleet whatever Domotz is doing.
+   */
+  function refreshFaults() {
+    if (!ctx.domotz || !ctx.domotz.enabled) return Promise.resolve();
+    return ctx.domotz.refreshIfDue(cfg.domotz ? cfg.domotz.maxWaitMs : 0)
+      .catch(function () {});
+  }
+
+  /**
+   * Positions, read now if a read is due — ON VERCEL ONLY.
+   *
+   * On a server that stays up the provider's own timer does this, and
+   * `ctx.onDemand` is never set. On Vercel nothing runs between requests, so
+   * without this the board would show whatever the cold start found and then
+   * nothing new, ever.
+   *
+   * Due by the provider's own interval — the same one its timer would have
+   * used — timed from the last ATTEMPT, so a provider refusing us is asked
+   * once per interval rather than once per screen. That interval is also what
+   * keeps a metered provider's bill where it was: sixty screens polling every
+   * thirty seconds still make one read per interval per instance.
+   *
+   * One read at a time, shared by every request that arrives during it, and
+   * capped like the Domotz read so the answer is never held up for long.
+   */
+  var positions = { lastAttemptAt: null, inFlight: null };
+
+  function positionInterval() {
+    var p = cfg.provider === 'myshiptracking' ? cfg.myShipTracking : cfg.vesselApi;
+    return Math.max(30, (p && p.pollSeconds) || 180) * 1000;
+  }
+
+  function refreshPositions() {
+    var reader = ctx.reader;
+    if (!ctx.onDemand || !reader || typeof reader.poll !== 'function') {
+      return Promise.resolve();
+    }
+    var due = !positions.lastAttemptAt ||
+      Date.now() - positions.lastAttemptAt.getTime() >= positionInterval();
+    if (due && !positions.inFlight) {
+      positions.lastAttemptAt = new Date();
+      positions.inFlight = reader.poll(Object.keys(store.byMmsi)).then(function (a) {
+        store.lastError = null;
+        console.log(new Date().toISOString() + '  ' + cfg.provider + ' (on demand): ' +
+          (a && a.applied != null ? a.applied + ' new fixes' : 'read'));
+      }, function (err) {
+        store.lastError = (err && err.message) || String(err);
+        console.log(new Date().toISOString() + '  ' + cfg.provider + ' (on demand): ' +
+          store.lastError);
+      }).then(function () { positions.inFlight = null; });
+    }
+    if (!positions.inFlight) return Promise.resolve();
+    var timer;
+    var cap = new Promise(function (resolve) {
+      timer = setTimeout(resolve, cfg.onDemandWaitMs || 7000);
+    });
+    return Promise.race([positions.inFlight, cap]).then(function () { clearTimeout(timer); });
+  }
+
   function handle(req, res) {
     var url;
     try { url = new URL(req.url, 'http://relay'); }
@@ -69,7 +131,31 @@ function create(ctx) {
       // opens. A screen polling every thirty seconds would otherwise pull a
       // third of a megabyte each time to redraw lines it already has.
       var withTracks = url.searchParams.get('tracks') === '1';
-      return json(res, 200, store.snapshot(withTracks));
+      // Positions and Domotz first, side by side, if either is due — on Vercel
+      // nothing else will read them.
+      return Promise.all([refreshPositions(), refreshFaults()]).then(function () {
+        var snap = store.snapshot(withTracks);
+        // A state and a count per yacht, never device names — see /api/faults.
+        var faults = ctx.domotz && ctx.domotz.board();
+        if (faults) snap.faults = faults;
+        json(res, 200, snap);
+      });
+    }
+
+    /**
+     * What is down on each yacht, by name — for the console, not the board.
+     *
+     * Separate from /api/fleet so the board never receives it: the wall in
+     * reception gets a coloured dot, and the list of a client's broken kit
+     * stays on the desk.
+     */
+    if (route === '/api/faults') {
+      if (!ctx.domotz || !ctx.domotz.enabled) {
+        return json(res, 503, { error: 'no Domotz: DOMOTZ_API_KEY is not set on this relay' });
+      }
+      return refreshFaults().then(function () {
+        json(res, 200, ctx.domotz.detail());
+      });
     }
 
     /**
@@ -244,6 +330,7 @@ function create(ctx) {
       minutesSinceLastFix: ageMinutes == null ? null : Math.round(ageMinutes),
       feedError: store.lastError,
       history: ctx.history ? ctx.history.stats() : 'not configured',
+      domotz: ctx.domotz ? ctx.domotz.stats() : 'not configured',
       snapshot: ctx.blob && ctx.blob.enabled()
         ? { savedAt: ctx.blob.lastSavedAt ? ctx.blob.lastSavedAt.toISOString() : null,
             error: ctx.blob.lastError }
