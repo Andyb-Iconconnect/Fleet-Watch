@@ -203,10 +203,41 @@
     return 0;
   }
 
+  /**
+   * Network health, invented, so the Domotz marks can be seen before a key is
+   * in. Fixed by position in the fleet rather than random, so the same yacht
+   * is the broken one on every screen and every reload.
+   */
+  var DEMO_DOWN = [
+    { name: 'VSAT modem', type: 'Satellite' },
+    { name: 'Bridge switch', type: 'Network switch' }
+  ];
+
+  function demoFaults(now) {
+    var vessels = {};
+    // The whole fleet, not only the yachts the simulator moves: Domotz knows
+    // about a yacht whether or not we know where she is.
+    window.Store.vessels.forEach(function (v, i) {
+      var a = { mmsi: String(v.yacht.mmsi) };
+      var state = i % 7 === 2 ? 'fault' : i % 11 === 5 ? 'unreachable' : 'ok';
+      var devices = state === 'fault'
+        ? DEMO_DOWN.slice(0, i % 2 + 1).map(function (d) {
+            return { name: d.name, type: d.type,
+                     since: new Date(now - 47 * 60000).toISOString() };
+          })
+        : [];
+      vessels[a.mmsi] = { state: state, down: devices.length, devices: devices };
+    });
+    return { checkedAt: new Date(now).toISOString(), vessels: vessels, demo: true };
+  }
+
   function tick() {
     var scale = (window.CONFIG.demo && window.CONFIG.demo.timeScale) || 30;
     var simHours = (TICK_MS / 3600000) * scale;
     var now = new Date();
+
+    Demo.faults = demoFaults(now.getTime());
+    window.Store.applyFaults(Demo.faults);
 
     Demo.agents.forEach(function (a) {
       if (a.kind === 'dark') return;         // stays exactly where it went quiet

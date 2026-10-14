@@ -44,9 +44,11 @@ function start(env) {
   const db = sqlFile.create(cfg, log);
   const history = historyFile.create(cfg, db, log);
 
+  const domotz = require('./domotz.js').create(cfg, fleet, log);
+
   const ctx = {
     config: cfg, store: store, blob: blob, db: db, history: history,
-    reader: null,
+    reader: null, domotz: domotz,
     problems: function () { return configFile.problems(cfg); }
   };
 
@@ -57,6 +59,11 @@ function start(env) {
       (cfg.instanceId ? '  instance ' + cfg.instanceId.slice(0, 8) : ''));
     ctx.problems().forEach(function (p) { log('CONFIGURATION: ' + p); });
   });
+
+  // Before the position feed, and whatever becomes of it: network health is
+  // worth having on a board whose AIS key has not been set yet.
+  if (domotz.enabled) domotz.start();
+  else log('no DOMOTZ_API_KEY, so no network health on the board');
 
   begin(ctx, fleet).catch(function (err) {
     log('the feed did not start: ' + ((err && err.message) || err));

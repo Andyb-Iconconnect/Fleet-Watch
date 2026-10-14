@@ -69,7 +69,25 @@ function create(ctx) {
       // opens. A screen polling every thirty seconds would otherwise pull a
       // third of a megabyte each time to redraw lines it already has.
       var withTracks = url.searchParams.get('tracks') === '1';
-      return json(res, 200, store.snapshot(withTracks));
+      var snap = store.snapshot(withTracks);
+      // A state and a count per yacht, never device names — see /api/faults.
+      var faults = ctx.domotz && ctx.domotz.board();
+      if (faults) snap.faults = faults;
+      return json(res, 200, snap);
+    }
+
+    /**
+     * What is down on each yacht, by name — for the console, not the board.
+     *
+     * Separate from /api/fleet so the board never receives it: the wall in
+     * reception gets a coloured dot, and the list of a client's broken kit
+     * stays on the desk.
+     */
+    if (route === '/api/faults') {
+      if (!ctx.domotz || !ctx.domotz.enabled) {
+        return json(res, 503, { error: 'no Domotz: DOMOTZ_API_KEY is not set on this relay' });
+      }
+      return json(res, 200, ctx.domotz.detail());
     }
 
     /**
@@ -244,6 +262,7 @@ function create(ctx) {
       minutesSinceLastFix: ageMinutes == null ? null : Math.round(ageMinutes),
       feedError: store.lastError,
       history: ctx.history ? ctx.history.stats() : 'not configured',
+      domotz: ctx.domotz ? ctx.domotz.stats() : 'not configured',
       snapshot: ctx.blob && ctx.blob.enabled()
         ? { savedAt: ctx.blob.lastSavedAt ? ctx.blob.lastSavedAt.toISOString() : null,
             error: ctx.blob.lastError }

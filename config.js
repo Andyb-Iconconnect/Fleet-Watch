@@ -143,6 +143,22 @@ window.CONFIG = {
     pollSeconds: 30
   },
 
+  /**
+   * Network health on board, from Domotz, through the relay.
+   *
+   * The board gets a small mark on the yacht and nothing else — no device
+   * names, no count on the wall. The console gets the list. Set `showOnBoard`
+   * false and the wall says nothing about it at all.
+   *
+   * `staleMinutes`: a reading older than this is dropped rather than shown.
+   * The relay reads Domotz every ten minutes, so this is three missed reads.
+   */
+  faults: {
+    showOnBoard: true,
+    staleMinutes: 30,
+    detailEndpoint: '/api/faults'
+  },
+
   vesselApi: {
     endpoint: 'https://api.vesselapi.com/v1/vessels/positions',
     pollMinutes: 3,

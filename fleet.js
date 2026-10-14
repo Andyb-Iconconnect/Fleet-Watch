@@ -56,6 +56,8 @@
  *                 not a likeness. Drop a photograph in and it takes over.
  *   discreet      true → never show an exact position for this yacht, regardless
  *                 of any other setting
+ *   domotzAgent   optional: the Domotz collector on board, by id or exact name.
+ *                 Only needed when the collector is not named after the yacht.
  *   demo          starting state for DEMO MODE only; ignored once live AIS is on.
  *                 Needs one of `route`, `position: [lon, lat]`, or `port` named
  *                 from data/ports.js, or she never reaches the chart.

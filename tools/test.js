@@ -6255,7 +6255,7 @@ test('every page a bundle is made from loads every script it needs', () => {
                   'marinetraffic.js', 'relay.js', 'vesselapi.js'];
   const BOARD_ONLY = ['app.js', 'views.js'];
   const CONSOLE_ONLY = ['console.js', 'browse.js', 'csv.js', 'fleetfilter.js',
-                        'passage.js'];
+                        'passage.js', 'faults.js'];
 
   const onDisk = fs.readdirSync(path.join(__dirname, '..', 'js'))
     .filter((f) => f.endsWith('.js')).sort();
@@ -6311,6 +6311,117 @@ test('a console missing a file says which one, rather than nothing at all', () =
   const preamble = src.slice(0, src.indexOf('function boot()'));
   assert.ok(!/^\s*var \w+ = window\.[A-Z]\w*\./m.test(preamble),
     'no module is read at load time');
+});
+
+/* --- Domotz: network health on board --------------------------------------- */
+
+test('Domotz collectors are matched to yachts by whole words, never guessed', () => {
+  const domotz = require('../server/domotz.js');
+  const fleet = [
+    { name: 'Ares', mmsi: 319000001 },
+    { name: 'Alaiya', mmsi: 319000002 },
+    { name: 'Lady Jo', mmsi: 319000003 },
+    { name: 'Jo', mmsi: 319000004, domotzAgent: 77 }
+  ];
+  const m = domotz.match(fleet, [
+    { id: 1, display_name: 'M/Y Alaiya - Bridge' },
+    { id: 2, display_name: 'Aresto' },             // not Ares
+    { id: 3, display_name: 'LADY JO' },
+    { id: 77, display_name: 'Something else' },    // pinned by id
+    { id: 4, display_name: 'Ares & Alaiya shared' } // two yachts: used for neither
+  ]);
+  assert.strictEqual(m.byAgent[1].mmsi, '319000002');
+  assert.ok(!m.byAgent[2], 'Aresto is not Ares');
+  assert.strictEqual(m.byAgent[3].mmsi, '319000003',
+    'Jo is pinned to a collector, so is never guessed onto "Lady Jo"');
+  assert.strictEqual(m.byAgent[77].mmsi, '319000004');
+  assert.ok(!m.byAgent[4]);
+  assert.deepStrictEqual(m.ambiguous, ['Ares & Alaiya shared']);
+  assert.deepStrictEqual(m.unmatched, ['Aresto']);
+});
+
+test('only important devices count as a Domotz fault', () => {
+  const { isFault } = require('../server/domotz.js');
+  assert.ok(isFault({ status: 'DOWN' }));
+  assert.ok(isFault({ status: 'OFFLINE', importance: 'VITAL' }));
+  assert.ok(!isFault({ status: 'OFFLINE', importance: 'FLOATING' }), 'a guest phone leaving');
+  assert.ok(!isFault({ status: 'ONLINE', importance: 'VITAL' }));
+});
+
+testAsync('the Domotz reader turns collectors and devices into a state per yacht', async () => {
+  const domotz = require('../server/domotz.js');
+  const fleet = [
+    { name: 'Alaiya', mmsi: 319000002 },
+    { name: 'Ares', mmsi: 319000001 },
+    { name: 'Anawa', mmsi: 310799000 }
+  ];
+  const seen = [];
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url, opts) => {
+    seen.push({ url, key: opts.headers['X-Api-Key'] });
+    if (/\/agent\?/.test(url)) {
+      return reply([
+        { id: 10, display_name: 'Alaiya', status: { value: 'ONLINE' } },
+        { id: 11, display_name: 'Ares', status: { value: 'OFFLINE' } },
+        { id: 12, display_name: 'Anawa', status: { value: 'ONLINE' } }
+      ]);
+    }
+    if (/\/agent\/10\/device$/.test(url)) {
+      return reply([
+        { display_name: 'VSAT', status: 'DOWN', type: { label: 'Satellite' },
+          last_status_change: '2026-10-14T08:00:00Z' },
+        { display_name: 'Guest phone', status: 'OFFLINE', importance: 'FLOATING' }
+      ]);
+    }
+    if (/\/agent\/12\/device$/.test(url)) return reply([{ display_name: 'Switch', status: 'ONLINE' }]);
+    throw new Error('unexpected ' + url);
+  };
+  const cfg = { domotz: { key: 'test-key', endpoint: 'https://domotz.test/v1/', pollSeconds: 600 } };
+  const r = domotz.create(cfg, fleet, () => {}, fake);
+  await r.poll();
+
+  assert.ok(seen.every((s) => s.key === 'test-key'));
+  assert.ok(!seen.some((s) => /\/agent\/11\//.test(s.url)), 'an offline collector is not asked for devices');
+  assert.strictEqual(r.byMmsi['319000002'].state, 'fault');
+  assert.deepStrictEqual(r.byMmsi['319000002'].devices.map((d) => d.name), ['VSAT']);
+  assert.strictEqual(r.byMmsi['319000001'].state, 'unreachable');
+  assert.strictEqual(r.byMmsi['310799000'].state, 'ok');
+
+  // What every screen gets carries no device names.
+  const board = r.board();
+  assert.deepStrictEqual(board.vessels['319000002'], { state: 'fault', down: 1 });
+  assert.ok(!/VSAT/.test(JSON.stringify(board)), 'device names stay off the board');
+});
+
+test('the board takes Domotz states from the relay and drops a stale one', () => {
+  Store.mode = 'demo';
+  Store.init(FLEET);
+  const a = Store.vessels[0], b = Store.vessels[1];
+  Store.applyFaults({
+    checkedAt: new Date().toISOString(),
+    vessels: { [String(a.yacht.mmsi)]: { state: 'fault', down: 2 } }
+  });
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, 'fault');
+  assert.strictEqual(b.derived.fault, null, 'no reading is not "ok"');
+  assert.strictEqual(Store.summary().network.fault, 1);
+
+  Store.applyFaults({
+    checkedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
+    vessels: { [String(a.yacht.mmsi)]: { state: 'fault', down: 2 } }
+  });
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, null, 'two hours old is not shown');
+
+  Store.applyFaults(null);
+  Store.recompute();
+  assert.strictEqual(a.derived.fault, null);
+});
+
+test('the console fetches the fault list; the board never does', () => {
+  assert.ok(/js\/faults\.js/.test(readRepo('console.html')));
+  assert.ok(!/js\/faults\.js/.test(readRepo('index.html')));
+  assert.ok(!/api\/faults/.test(readRepo('js/relay.js')));
 });
 
 /* --- end of tests. Anything new goes ABOVE this line. --------------------- */

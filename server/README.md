@@ -107,6 +107,29 @@ account, and with a blob-scoped SAS it cannot.
 | `TRACK_POINTS` | `240` | Positions kept per yacht for the trail on the chart |
 | `ALLOW_MULTIPLE_READERS` | unset | Permits more than one instance to read the feed |
 
+**Network health from Domotz (optional)**
+
+| Setting | Default | What it does |
+|---|---|---|
+| `DOMOTZ_API_KEY` | unset | A Domotz Public API key. Unset, the relay does exactly what it did before |
+| `DOMOTZ_ENDPOINT` | `https://api-eu-west-1-cell-1.domotz.com/public-api/v1` | The API address shown beside the key in the Domotz portal |
+| `DOMOTZ_POLL_SECONDS` | `600` | How often to read Domotz. Every collector is a request, so keep this modest |
+
+With a key set, the relay reads every Domotz collector and, for each one that is
+online, its devices. A yacht is **fault** when a device is DOWN or an important
+(VITAL) device is offline, and **unreachable** when her collector is offline —
+usually meaning her internet is down. A guest's phone leaving the network is
+neither.
+
+Collectors are matched to yachts by name, as whole words: "M/Y Alaiya – Bridge"
+is Alaiya, "Aresto" is not Ares. Where that will not work, set `domotzAgent` on
+the yacht in `fleet.js` to the collector's id or exact name. Collectors nobody
+could place are listed under `domotz` on `/api/health`.
+
+The board receives only a state per yacht and draws a small mark — red for a
+fault, a hollow amber ring for unreachable — and never on a discreet yacht.
+Device names are served only on `/api/faults`, which only the console asks for.
+
 VesselAPI answers with a *stream* of position reports rather than a snapshot of
 where everyone is, so the reader keeps a watermark and reads only what is new.
 That means **the bill follows how much the fleet talks, not how often we

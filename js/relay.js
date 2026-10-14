@@ -122,6 +122,10 @@
       if (row.voyage) window.Store.applyVoyage(mmsi, row.voyage);
     });
 
+    // Network health rides along when the relay has Domotz. Absent, every
+    // yacht's is cleared, which is what a relay without a key should mean.
+    window.Store.applyFaults(snap.faults || null);
+
     /**
      * Asked for once — and cleared here, after a good answer, rather than when
      * the request went out. A board that opened during a deployment would

@@ -49,6 +49,7 @@
         ais: null,             // who the transponder says she is — see applyIdentity
         track: [],             // [{ lon, lat, at }] newest last
         weather: null,
+        fault: null,           // { state, down, at } from Domotz — see applyFaults
         derived: {}
       };
     });
@@ -125,6 +126,22 @@
     return true;
   };
 
+  /**
+   * Network health from Domotz, for the whole fleet at once.
+   *
+   * Replaced rather than merged: a yacht missing from a reading has no
+   * collector we could place, and keeping her last state would show a fault
+   * fixed hours ago. `at` is when the relay read Domotz, not when we were told.
+   */
+  Store.applyFaults = function (faults) {
+    var rows = (faults && faults.vessels) || {};
+    var at = faults && faults.checkedAt ? new Date(faults.checkedAt) : null;
+    Store.vessels.forEach(function (v) {
+      var row = rows[String(v.yacht.mmsi)];
+      v.fault = row && at ? { state: row.state, down: row.down || 0, at: at } : null;
+    });
+  };
+
   Store.applyWeather = function (mmsi, weather) {
     var v = Store.byMmsi[String(mmsi)];
     if (!v) return;
@@ -163,6 +180,7 @@
       d.dark = d.ageMinutes == null || d.ageMinutes > cfg.ais.darkPositionHours * 60;
       d.status = deriveStatus(v, d, now);
       d.discreet = !!v.yacht.discreet || !!cfg.discreetMode;
+      d.fault = deriveFault(v, now, cfg);
 
       if (v.fix) {
         // What the rest of the app should draw. In discreet mode this is a
@@ -249,6 +267,17 @@
     return { degrees: Math.round(Math.abs(diff)), side: diff > 0 ? 'starboard' : 'port' };
   }
 
+  // 'ok' | 'fault' | 'unreachable', or null when there is nothing current to
+  // say. An old reading is dropped rather than shown: a fault cleared an hour
+  // ago is not a fault, and a stale "ok" is not reassurance either.
+  function deriveFault(v, now, cfg) {
+    var f = v.fault;
+    if (!f || !f.at) return null;
+    var limit = ((cfg.faults && cfg.faults.staleMinutes) || 30) * 60000;
+    if (now - f.at > limit) return null;
+    return f.state;
+  }
+
   function deriveStatus(v, d, now) {
     if (!v.fix) return 'unknown';
     if (d.dark) return 'dark';
@@ -314,8 +343,13 @@
   Store.summary = function () {
     var counts = { underway: 0, anchored: 0, moored: 0, dark: 0, unknown: 0 };
     var tracked = 0, distance7d = 0;
+    var network = { ok: 0, fault: 0, unreachable: 0, known: 0 };
     Store.vessels.forEach(function (v) {
       counts[v.derived.status] = (counts[v.derived.status] || 0) + 1;
+      if (v.derived.fault) {
+        network[v.derived.fault]++;
+        network.known++;
+      }
       if (v.fix && !v.derived.dark) tracked++;
       distance7d += v.derived.distance7d || 0;
     });
@@ -323,7 +357,8 @@
       counts: counts,
       total: Store.vessels.length,
       tracked: tracked,
-      distance7d: distance7d
+      distance7d: distance7d,
+      network: network
     };
   };
 

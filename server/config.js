@@ -46,6 +46,21 @@ function read(env) {
     },
 
     /**
+     * Network health on board, from Domotz. Optional and separate from the
+     * position feed: no DOMOTZ_API_KEY and the relay behaves exactly as it did.
+     *
+     * Every ten minutes by default. A fault that has lasted ten minutes is
+     * still news, and sixty collectors every few seconds is how an API key
+     * gets rate-limited.
+     */
+    domotz: {
+      key: (e.DOMOTZ_API_KEY || '').trim() || null,
+      endpoint: (e.DOMOTZ_ENDPOINT || '').trim() ||
+        'https://api-eu-west-1-cell-1.domotz.com/public-api/v1',
+      pollSeconds: Number(e.DOMOTZ_POLL_SECONDS) || 600
+    },
+
+    /**
      * Where the snapshot is kept so a restart does not blank the board.
      *
      * A container-hosted app is restarted whenever Azure feels like it —
