@@ -33,7 +33,15 @@ function loadFleet() {
   return global.window.FLEET;
 }
 
-function start(env) {
+/**
+ * The relay, assembled but not listening and not reading anything yet.
+ *
+ * Separate from start() because there are two ways to run it. On Azure — or
+ * on a laptop — start() listens on a port and reads the feeds on timers. On
+ * Vercel there is no port and no timer worth having: server/vercel.js takes
+ * this, and Vercel hands it one request at a time.
+ */
+function create(env) {
   const cfg = configFile.read(env);
   const fleet = loadFleet();
   const store = storeFile.create(fleet, {
@@ -52,9 +60,16 @@ function start(env) {
     problems: function () { return configFile.problems(cfg); }
   };
 
-  const app = require('./app.js').create(ctx);
+  ctx.app = require('./app.js').create(ctx);
+  ctx.fleet = fleet;
+  return ctx;
+}
 
-  app.server.listen(cfg.port, function () {
+function start(env) {
+  const ctx = create(env);
+  const cfg = ctx.config, store = ctx.store, domotz = ctx.domotz;
+
+  ctx.app.server.listen(cfg.port, function () {
     log('relay listening on ' + cfg.port +
       (cfg.instanceId ? '  instance ' + cfg.instanceId.slice(0, 8) : ''));
     ctx.problems().forEach(function (p) { log('CONFIGURATION: ' + p); });
@@ -65,7 +80,7 @@ function start(env) {
   if (domotz.enabled) domotz.start();
   else log('no DOMOTZ_API_KEY, so no network health on the board');
 
-  begin(ctx, fleet).catch(function (err) {
+  begin(ctx, ctx.fleet).catch(function (err) {
     log('the feed did not start: ' + ((err && err.message) || err));
     store.lastError = (err && err.message) || String(err);
   });
@@ -185,6 +200,6 @@ async function begin(ctx, fleet) {
   });
 }
 
-module.exports = { start: start };
+module.exports = { start: start, create: create, begin: begin, log: log };
 
 if (require.main === module) start(process.env);

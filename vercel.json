@@ -2,14 +2,27 @@
   "version": 2,
   "builds": [
     {
-      "src": "server/index.js",
-      "use": "@vercel/node"
+      "src": "server/vercel.js",
+      "use": "@vercel/node",
+      "config": {
+        "includeFiles": [
+          "index.html",
+          "console.html",
+          "fleet.js",
+          "config.js",
+          "fleet-template.csv",
+          "js/**",
+          "css/**",
+          "data/**",
+          "assets/**"
+        ]
+      }
     }
   ],
   "routes": [
     {
       "src": "/(.*)",
-      "dest": "server/index.js"
+      "dest": "server/vercel.js"
     }
   ],
   "env": {

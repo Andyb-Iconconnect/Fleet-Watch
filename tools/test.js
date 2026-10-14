@@ -6456,6 +6456,46 @@ testAsync('/api/fleet waits for a due Domotz read and carries its states', async
   assert.deepStrictEqual(body.faults.vessels['319000002'], { state: 'unreachable', down: 0 });
 });
 
+testAsync('the Vercel entry answers requests without listening on a port of its own', async () => {
+  /**
+   * vercel.json once pointed at server/index.js, which exports start() and
+   * listens on a port — not the request handler Vercel calls. Every request
+   * would have failed. This runs the handler the way Vercel does, behind a
+   * plain http server, and asks it for the board, the fleet and its health.
+   */
+  const handler = require('../server/vercel.js');
+  assert.strictEqual(typeof handler, 'function', 'Vercel needs a function');
+
+  const http = require('http');
+  const server = http.createServer(handler);
+  await new Promise((r) => server.listen(0, r));
+  const base = 'http://127.0.0.1:' + server.address().port;
+  try {
+    const page = await fetch(base + '/');
+    assert.strictEqual(page.status, 200);
+    assert.ok(/<html/i.test(await page.text()), 'the board itself is served');
+
+    const fleet = await fetch(base + '/api/fleet');
+    assert.strictEqual(fleet.status, 200);
+    assert.ok(Array.isArray((await fleet.json()).vessels));
+
+    const health = await fetch(base + '/api/health');
+    assert.ok('domotz' in await health.json());
+
+    assert.strictEqual((await fetch(base + '/package.json')).status, 404,
+      'and still nothing outside the board');
+  } finally {
+    server.close();
+  }
+
+  const cfg = JSON.parse(readRepo('vercel.json'));
+  assert.strictEqual(cfg.builds[0].src, 'server/vercel.js');
+  assert.ok(cfg.routes.every((r) => r.dest === 'server/vercel.js'));
+  ['index.html', 'console.html', 'fleet.js', 'config.js', 'js/**', 'css/**', 'data/**', 'assets/**']
+    .forEach((f) => assert.ok(cfg.builds[0].config.includeFiles.indexOf(f) !== -1,
+      f + ' is bundled, or the function has no board to serve'));
+});
+
 test('the board takes Domotz states from the relay and drops a stale one', () => {
   Store.mode = 'demo';
   Store.init(FLEET);

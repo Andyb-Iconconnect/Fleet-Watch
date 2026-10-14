@@ -148,6 +148,24 @@ about 1,000.
 
 ---
 
+## On Vercel instead
+
+`vercel.json` points Vercel at **`server/vercel.js`**, not `server/index.js`.
+Vercel calls a function once per request rather than running a server, so
+`index.js` — which listens on a port — would never answer anything there.
+`vercel.js` assembles the relay once per warm instance and hands it each
+request. The board's own files are bundled with it through `includeFiles`.
+
+Set the same settings under Project → Settings → Environment Variables.
+
+What is different from Azure: nothing runs between requests. Domotz is read
+when a screen asks and a read is due (above). A position feed that relies on a
+timer only advances while requests are arriving, and each Vercel instance
+holds its own copy of the fleet — set `SNAPSHOT_BLOB_SAS_URL` so a cold one
+starts from the last snapshot rather than from nothing.
+
+---
+
 ## Lock it down
 
 **Authentication → App Service authentication → Entra ID.**
