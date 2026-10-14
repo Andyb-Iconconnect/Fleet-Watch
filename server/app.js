@@ -57,6 +57,17 @@ function create(ctx) {
     res.end(text);
   }
 
+  /**
+   * A Domotz read when one is due, capped so a slow Domotz never holds up the
+   * positions. Never rejects: network health is extra, and a screen must get
+   * its fleet whatever Domotz is doing.
+   */
+  function refreshFaults() {
+    if (!ctx.domotz || !ctx.domotz.enabled) return Promise.resolve();
+    return ctx.domotz.refreshIfDue(cfg.domotz ? cfg.domotz.maxWaitMs : 0)
+      .catch(function () {});
+  }
+
   function handle(req, res) {
     var url;
     try { url = new URL(req.url, 'http://relay'); }
@@ -69,11 +80,14 @@ function create(ctx) {
       // opens. A screen polling every thirty seconds would otherwise pull a
       // third of a megabyte each time to redraw lines it already has.
       var withTracks = url.searchParams.get('tracks') === '1';
-      var snap = store.snapshot(withTracks);
-      // A state and a count per yacht, never device names — see /api/faults.
-      var faults = ctx.domotz && ctx.domotz.board();
-      if (faults) snap.faults = faults;
-      return json(res, 200, snap);
+      // Domotz first, if a read is due — on Vercel nothing else will do it.
+      return refreshFaults().then(function () {
+        var snap = store.snapshot(withTracks);
+        // A state and a count per yacht, never device names — see /api/faults.
+        var faults = ctx.domotz && ctx.domotz.board();
+        if (faults) snap.faults = faults;
+        json(res, 200, snap);
+      });
     }
 
     /**
@@ -87,7 +101,9 @@ function create(ctx) {
       if (!ctx.domotz || !ctx.domotz.enabled) {
         return json(res, 503, { error: 'no Domotz: DOMOTZ_API_KEY is not set on this relay' });
       }
-      return json(res, 200, ctx.domotz.detail());
+      return refreshFaults().then(function () {
+        json(res, 200, ctx.domotz.detail());
+      });
     }
 
     /**

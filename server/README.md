@@ -114,6 +114,14 @@ account, and with a blob-scoped SAS it cannot.
 | `DOMOTZ_API_KEY` | unset | A Domotz Public API key. Unset, the relay does exactly what it did before |
 | `DOMOTZ_ENDPOINT` | `https://api-eu-west-1-cell-1.domotz.com/public-api/v1` | The API address shown beside the key in the Domotz portal |
 | `DOMOTZ_POLL_SECONDS` | `600` | How often to read Domotz. Every collector is a request, so keep this modest |
+| `DOMOTZ_MAX_WAIT_MS` | `7000` | How long a screen's request may wait for a Domotz read that is due |
+
+On a server that stays up (Azure) Domotz is read on a timer. On Vercel nothing
+runs between requests, so the relay also reads it when a screen asks for the
+fleet and the last read is older than `DOMOTZ_POLL_SECONDS` — one read however
+many screens ask, and never holding up the positions longer than
+`DOMOTZ_MAX_WAIT_MS`. After a cold start the first screen may get its positions
+before the first Domotz reading; the next poll carries it.
 
 With a key set, the relay reads every Domotz collector and, for each one that is
 online, its devices. A yacht is **fault** when a device is DOWN or an important

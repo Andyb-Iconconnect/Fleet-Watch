@@ -6393,6 +6393,69 @@ testAsync('the Domotz reader turns collectors and devices into a state per yacht
   assert.ok(!/VSAT/.test(JSON.stringify(board)), 'device names stay off the board');
 });
 
+testAsync('on Vercel, Domotz is read when a screen asks and a read is due — once', async () => {
+  const domotz = require('../server/domotz.js');
+  let agentCalls = 0;
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url) => {
+    if (/\/agent\?/.test(url)) {
+      agentCalls++;
+      return reply([{ id: 1, display_name: 'Alaiya', status: { value: 'ONLINE' } }]);
+    }
+    return reply([]);
+  };
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600 } };
+  const r = domotz.create(cfg, [{ name: 'Alaiya', mmsi: 319000002 }], () => {}, fake);
+
+  // Two screens arriving together share one read.
+  await Promise.all([r.refreshIfDue(1000), r.refreshIfDue(1000)]);
+  assert.strictEqual(agentCalls, 1);
+  assert.strictEqual(r.byMmsi['319000002'].state, 'ok');
+
+  // Inside the interval, nothing is asked.
+  await r.refreshIfDue(1000);
+  assert.strictEqual(agentCalls, 1);
+
+  // Past it, it is.
+  r.lastAttemptAt = new Date(Date.now() - 601000);
+  await r.refreshIfDue(1000);
+  assert.strictEqual(agentCalls, 2);
+});
+
+testAsync('a slow Domotz never holds up the positions', async () => {
+  const domotz = require('../server/domotz.js');
+  const fake = () => new Promise(() => {});      // never answers
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600 } };
+  const r = domotz.create(cfg, [], () => {}, fake);
+  const t0 = Date.now();
+  await r.refreshIfDue(50);
+  assert.ok(Date.now() - t0 < 1000, 'gave up waiting after the cap');
+  assert.strictEqual(r.board(), null, 'and reports nothing rather than an invented "ok"');
+});
+
+testAsync('/api/fleet waits for a due Domotz read and carries its states', async () => {
+  const domotz = require('../server/domotz.js');
+  const reply = (body) => ({ ok: true, status: 200, json: async () => body });
+  const fake = async (url) => /\/agent\?/.test(url)
+    ? reply([{ id: 1, display_name: 'Alaiya', status: { value: 'OFFLINE' } }])
+    : reply([]);
+  const cfg = { domotz: { key: 'k', endpoint: 'https://domotz.test/v1', pollSeconds: 600, maxWaitMs: 2000 } };
+  const fleet = [{ name: 'Alaiya', mmsi: 319000002 }];
+  const store = require('../server/store.js').create(fleet, {});
+  const app = require('../server/app.js').create({
+    config: cfg, store: store, domotz: domotz.create(cfg, fleet, () => {}, fake),
+    problems: () => []
+  });
+  const body = await new Promise((resolve) => {
+    const res = {
+      writeHead() {},
+      end(text) { resolve(JSON.parse(text)); }
+    };
+    app.handle({ url: '/api/fleet' }, res);
+  });
+  assert.deepStrictEqual(body.faults.vessels['319000002'], { state: 'unreachable', down: 0 });
+});
+
 test('the board takes Domotz states from the relay and drops a stale one', () => {
   Store.mode = 'demo';
   Store.init(FLEET);

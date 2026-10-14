@@ -28,6 +28,9 @@
 'use strict';
 
 const PAGE_SIZE = 100;
+// Collectors asked about at once. Enough that sixty answer in a few seconds,
+// few enough not to look like a burst to a rate limit.
+const CONCURRENCY = 6;
 
 function create(cfg, fleet, log, fetchImpl) {
   var c = cfg.domotz;
@@ -39,6 +42,8 @@ function create(cfg, fleet, log, fetchImpl) {
     timer: null,
     stopped: true,
     lastPollAt: null,
+    lastAttemptAt: null,
+    inFlight: null,
     lastError: null,
     // mmsi → { state, down, agents, devices: [{ name, type, since }], checkedAt }
     byMmsi: {},
@@ -78,32 +83,44 @@ function create(cfg, fleet, log, fetchImpl) {
     var now = new Date().toISOString();
     var next = {};
 
-    // One collector at a time. Sixty yachts in a burst is the kind of thing a
-    // rate limit is written for, and nothing here is in a hurry.
     var ids = Object.keys(matched.byAgent);
-    for (var i = 0; i < ids.length; i++) {
-      var agent = matched.byAgent[ids[i]].agent;
-      var mmsi = matched.byAgent[ids[i]].mmsi;
+    var online = [];
+    ids.forEach(function (id) {
+      var agent = matched.byAgent[id].agent;
+      var mmsi = matched.byAgent[id].mmsi;
       var entry = next[mmsi] || (next[mmsi] = {
         state: 'ok', down: 0, agents: 0, offline: 0, devices: [], checkedAt: now
       });
       entry.agents++;
+      if (agentOnline(agent)) online.push({ agent: agent, entry: entry });
+      else entry.offline++;
+    });
 
-      if (!agentOnline(agent)) {
-        entry.offline++;
-        continue;
-      }
-
-      var devices = await get('/agent/' + encodeURIComponent(agent.id) + '/device');
-      (Array.isArray(devices) ? devices : []).forEach(function (d) {
-        if (!isFault(d)) return;
-        entry.devices.push({
-          name: text(d.display_name) || 'Unnamed device',
-          type: d.type && text(d.type.label) || null,
-          since: text(d.last_status_change) || null
+    /**
+     * A few collectors at a time, not sixty in a burst and not one by one.
+     *
+     * One by one was the polite version and took twenty seconds for a fleet
+     * this size — fine on a server that polls in the background, not fine on
+     * Vercel, where the poll happens while a screen waits for its answer.
+     */
+    var cursor = 0;
+    async function worker() {
+      while (cursor < online.length) {
+        var job = online[cursor++];
+        var devices = await get('/agent/' + encodeURIComponent(job.agent.id) + '/device');
+        (Array.isArray(devices) ? devices : []).forEach(function (d) {
+          if (!isFault(d)) return;
+          job.entry.devices.push({
+            name: text(d.display_name) || 'Unnamed device',
+            type: d.type && text(d.type.label) || null,
+            since: text(d.last_status_change) || null
+          });
         });
-      });
+      }
     }
+    var workers = [];
+    for (var w = 0; w < CONCURRENCY; w++) workers.push(worker());
+    await Promise.all(workers);
 
     Object.keys(next).forEach(function (m) {
       var e = next[m];
@@ -123,28 +140,69 @@ function create(cfg, fleet, log, fetchImpl) {
 
   reader.poll = poll;
 
+  /**
+   * One read, logged, never thrown — and never two at once. A timer and a
+   * screen arriving together share the read already under way.
+   */
+  function run() {
+    if (reader.inFlight) return reader.inFlight;
+    reader.lastAttemptAt = new Date();
+    reader.inFlight = poll().then(function (r) {
+      var faults = Object.keys(reader.byMmsi).filter(function (m) {
+        return reader.byMmsi[m].state !== 'ok';
+      }).length;
+      log('domotz: ' + r.agents + ' collectors, ' + r.yachts + ' yachts placed, ' +
+        faults + ' with a fault' +
+        (reader.unmatched.length ? ', ' + reader.unmatched.length + ' collectors unplaced' : ''));
+    }).catch(function (err) {
+      // Kept, not cleared: the last good reading, with its own time on it,
+      // is more use than a blank — and the board ages it out on its own.
+      reader.lastError = (err && err.message) || String(err);
+      log('domotz: ' + reader.lastError);
+    }).then(function () {
+      reader.inFlight = null;
+    });
+    return reader.inFlight;
+  }
+
   reader.start = function () {
     if (!reader.enabled) return;
     reader.stopped = false;
-    var run = function () {
-      if (reader.stopped) return;
-      poll().then(function (r) {
-        var faults = Object.keys(reader.byMmsi).filter(function (m) {
-          return reader.byMmsi[m].state !== 'ok';
-        }).length;
-        log('domotz: ' + r.agents + ' collectors, ' + r.yachts + ' yachts placed, ' +
-          faults + ' with a fault' +
-          (reader.unmatched.length ? ', ' + reader.unmatched.length + ' collectors unplaced' : ''));
-      }).catch(function (err) {
-        // Kept, not cleared: the last good reading, with its own time on it,
-        // is more use than a blank — and the board ages it out on its own.
-        reader.lastError = (err && err.message) || String(err);
-        log('domotz: ' + reader.lastError);
-      });
-    };
     run();
-    reader.timer = setInterval(run, Math.max(60, c.pollSeconds) * 1000);
+    reader.timer = setInterval(function () {
+      if (!reader.stopped) run();
+    }, Math.max(60, c.pollSeconds) * 1000);
     if (reader.timer.unref) reader.timer.unref();
+  };
+
+  /**
+   * Read Domotz now if the last attempt is older than the poll interval.
+   *
+   * FOR VERCEL, where the timer in start() is no use: a serverless function
+   * is frozen between requests, so nothing runs in the background and a
+   * reading would only ever be as old as the cold start that made it. Asking
+   * here, on the way to answering a screen, makes the screens the clock. On a
+   * server that stays up — Azure — the timer has always just run, so this
+   * finds nothing due and costs nothing.
+   *
+   * Timed from the last ATTEMPT, not the last success, so a Domotz that is
+   * refusing us is asked once per interval rather than once per screen poll.
+   *
+   * Waits at most `maxWaitMs`. A slow Domotz must not hold up the positions:
+   * the screen gets whatever reading there is, and the read carries on for
+   * the next one wherever the platform lets it.
+   */
+  reader.refreshIfDue = function (maxWaitMs) {
+    if (!reader.enabled) return Promise.resolve();
+    var due = !reader.lastAttemptAt ||
+      Date.now() - reader.lastAttemptAt.getTime() >= Math.max(60, c.pollSeconds) * 1000;
+    var pending = due ? run() : reader.inFlight;
+    if (!pending) return Promise.resolve();
+    var timer;
+    var cap = new Promise(function (resolve) {
+      timer = setTimeout(resolve, maxWaitMs || 8000);
+    });
+    return Promise.race([pending, cap]).then(function () { clearTimeout(timer); });
   };
 
   reader.stop = function () {

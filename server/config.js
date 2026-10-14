@@ -57,7 +57,10 @@ function read(env) {
       key: (e.DOMOTZ_API_KEY || '').trim() || null,
       endpoint: (e.DOMOTZ_ENDPOINT || '').trim() ||
         'https://api-eu-west-1-cell-1.domotz.com/public-api/v1',
-      pollSeconds: Number(e.DOMOTZ_POLL_SECONDS) || 600
+      pollSeconds: Number(e.DOMOTZ_POLL_SECONDS) || 600,
+      // How long a screen's request may wait on a Domotz read that is due.
+      // Under Vercel's ten-second limit, with room for the rest of the answer.
+      maxWaitMs: Number(e.DOMOTZ_MAX_WAIT_MS) || 7000
     },
 
     /**
