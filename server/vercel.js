@@ -34,6 +34,8 @@ let begun = null;
 function ready() {
   if (!ctx) {
     ctx = relay.create(process.env);
+    // Positions are read when a screen asks, not on a timer — see app.js.
+    ctx.onDemand = true;
     begun = relay.begin(ctx, ctx.fleet).catch(function (err) {
       relay.log('the feed did not start: ' + ((err && err.message) || err));
       ctx.store.lastError = (err && err.message) || String(err);

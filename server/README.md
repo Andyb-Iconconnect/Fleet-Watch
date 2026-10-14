@@ -158,10 +158,24 @@ request. The board's own files are bundled with it through `includeFiles`.
 
 Set the same settings under Project → Settings → Environment Variables.
 
-What is different from Azure: nothing runs between requests. Domotz is read
-when a screen asks and a read is due (above). A position feed that relies on a
-timer only advances while requests are arriving, and each Vercel instance
-holds its own copy of the fleet — set `SNAPSHOT_BLOB_SAS_URL` so a cold one
+What is different from Azure: nothing runs between requests, so on Vercel the
+screens are the clock. When one asks for the fleet:
+
+- **Positions** are read if the last read is older than the provider's own
+  interval (`MYSHIPTRACKING_POLL_SECONDS`, default 900; `VESSELAPI_POLL_SECONDS`,
+  default 180). The provider's background timer is not started there, so the
+  two can never both pay for the same positions. AISstream is a socket rather
+  than a poll and is unaffected.
+- **Domotz** is read the same way, by `DOMOTZ_POLL_SECONDS` (above).
+
+Both run side by side, every screen arriving meanwhile shares the one read,
+and neither holds an answer up for longer than `ON_DEMAND_WAIT_MS` (default
+7000). A provider that is failing is asked once per interval, not once per
+screen.
+
+**On a metered provider, each warm Vercel instance reads on its own**, and a
+cold one reads straight away. Vercel usually keeps one instance for a handful of
+screens, but it decides, not us. Set `SNAPSHOT_BLOB_SAS_URL` so a cold instance
 starts from the last snapshot rather than from nothing.
 
 ---

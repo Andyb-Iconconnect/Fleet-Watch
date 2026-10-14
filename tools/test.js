@@ -6496,6 +6496,73 @@ testAsync('the Vercel entry answers requests without listening on a port of its 
       f + ' is bundled, or the function has no board to serve'));
 });
 
+testAsync('on Vercel, positions are read when a screen asks and a read is due — once', async () => {
+  const fleet = [{ name: 'Alaiya', mmsi: 319000002 }];
+  const store = require('../server/store.js').create(fleet, {});
+  let polls = 0, release;
+  const reader = {
+    poll(list) {
+      polls++;
+      assert.deepStrictEqual(list, ['319000002'], 'asked about our own fleet');
+      return new Promise((resolve) => { release = resolve; }).then(() => {
+        store.applyFix('319000002', { lat: 43.7, lon: 7.4, at: new Date() });
+        return { applied: 1 };
+      });
+    },
+    start() { throw new Error('a polled provider is never started on Vercel'); }
+  };
+  const cfg = { provider: 'myshiptracking', myShipTracking: { pollSeconds: 900 },
+                onDemandWaitMs: 2000 };
+  const ctx = { config: cfg, store: store, reader: reader, onDemand: true, problems: () => [] };
+  const app = require('../server/app.js').create(ctx);
+  const ask = () => new Promise((resolve) => {
+    app.handle({ url: '/api/fleet' }, { writeHead() {}, end(t) { resolve(JSON.parse(t)); } });
+  });
+
+  // Two screens at once: one read, and both get its positions.
+  const both = Promise.all([ask(), ask()]);
+  await new Promise((r) => setTimeout(r, 0));
+  release();
+  const [a, b] = await both;
+  assert.strictEqual(polls, 1);
+  assert.strictEqual(a.vessels.length, 1);
+  assert.strictEqual(b.vessels.length, 1);
+
+  // Inside the provider's interval, nothing more is bought.
+  await ask();
+  assert.strictEqual(polls, 1);
+
+  // A server that stays up never does this: its timer is the clock.
+  const steady = require('../server/app.js').create(Object.assign({}, ctx, { onDemand: false }));
+  await new Promise((resolve) => {
+    steady.handle({ url: '/api/fleet' }, { writeHead() {}, end: resolve });
+  });
+  assert.strictEqual(polls, 1);
+});
+
+testAsync('a provider that never answers does not hold up the board on Vercel', async () => {
+  const store = require('../server/store.js').create([{ name: 'A', mmsi: 319000002 }], {});
+  const ctx = {
+    config: { provider: 'vesselapi', vesselApi: { pollSeconds: 180 }, onDemandWaitMs: 50 },
+    store: store, reader: { poll: () => new Promise(() => {}) }, onDemand: true,
+    problems: () => []
+  };
+  const app = require('../server/app.js').create(ctx);
+  const t0 = Date.now();
+  const body = await new Promise((resolve) => {
+    app.handle({ url: '/api/fleet' }, { writeHead() {}, end(t) { resolve(JSON.parse(t)); } });
+  });
+  assert.ok(Date.now() - t0 < 1000);
+  assert.deepStrictEqual(body.vessels, []);
+});
+
+test('the Vercel entry asks for positions on demand, and only it does', () => {
+  assert.ok(/ctx\.onDemand = true/.test(readRepo('server/vercel.js')));
+  assert.ok(!/onDemand = true/.test(readRepo('server/index.js')));
+  assert.ok(/if \(!\(ctx\.onDemand && typeof ctx\.reader\.poll === 'function'\)\)/
+    .test(readRepo('server/index.js')), 'a polled provider is not started on Vercel');
+});
+
 test('the board takes Domotz states from the relay and drops a stale one', () => {
   Store.mode = 'demo';
   Store.init(FLEET);

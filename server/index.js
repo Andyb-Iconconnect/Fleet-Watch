@@ -139,7 +139,16 @@ async function begin(ctx, fleet) {
     : require('./providers/vesselapi.js');
 
   ctx.reader = provider.create(cfg, ctx.store, log);
-  ctx.reader.start(mmsis);
+  /**
+   * On Vercel a polled provider is not started: its timer would only fire
+   * while some request happened to be running, and could then poll alongside
+   * the on-demand read in app.js and pay for the same positions twice. The
+   * screens are its clock there instead. AISstream has nothing to poll — it
+   * is a socket — so it is started either way and streams while it can.
+   */
+  if (!(ctx.onDemand && typeof ctx.reader.poll === 'function')) {
+    ctx.reader.start(mmsis);
+  }
 
   if (ctx.blob.enabled()) {
     const save = setInterval(function () {

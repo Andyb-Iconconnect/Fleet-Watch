@@ -45,6 +45,10 @@ function read(env) {
       pollSeconds: Number(e.MYSHIPTRACKING_POLL_SECONDS) || 900
     },
 
+    // On Vercel, how long a screen's request may wait for a position read that
+    // is due before it is answered with what the relay already holds.
+    onDemandWaitMs: Number(e.ON_DEMAND_WAIT_MS) || 7000,
+
     /**
      * Network health on board, from Domotz. Optional and separate from the
      * position feed: no DOMOTZ_API_KEY and the relay behaves exactly as it did.
